@@ -22,6 +22,8 @@
   },
   "toolbar": {
     "ariaLabel": "Formatting toolbar",
+    "save": "Save",
+    "saveShortcut": "Ctrl+S",
     "file": "File",
     "format": "Format",
     "insert": "Insert",
@@ -30,6 +32,7 @@
     "pageSetup": "Page setup",
     "leftToRight": "Left-to-right text",
     "rightToLeft": "Right-to-left text",
+    "clearFormatting": "Clear formatting",
     "image": "Image",
     "table": "Table",
     "pageBreak": "Page break",

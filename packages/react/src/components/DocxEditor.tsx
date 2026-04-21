@@ -3856,6 +3856,7 @@ body { background: white; }
                   >
                     <EditorToolbar
                       currentFormatting={state.selectionFormatting}
+                      onSave={handleSave}
                       onFormat={handleFormat}
                       onUndo={undoActiveEditor}
                       onRedo={redoActiveEditor}

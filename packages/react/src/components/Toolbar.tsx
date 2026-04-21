@@ -107,6 +107,8 @@ export interface ToolbarProps {
   currentFormatting?: SelectionFormatting;
   /** Callback when a formatting action is triggered */
   onFormat?: (action: FormattingAction) => void;
+  /** Callback when save action is triggered */
+  onSave?: () => void;
   /** Callback for undo action */
   onUndo?: () => void;
   /** Callback for redo action */
