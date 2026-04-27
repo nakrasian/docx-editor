@@ -21,6 +21,7 @@ import type {
   Style,
   Theme,
 } from '@eigenpal/docx-core/types/document';
+import type { MenuRegistry } from './Menus';
 import { Button } from './ui/Button';
 import { Tooltip } from './ui/Tooltip';
 import { MenuDropdown } from './ui/MenuDropdown';
@@ -149,6 +150,8 @@ export interface ToolbarProps {
   documentStyles?: Style[];
   /** Theme for the style picker */
   theme?: Theme | null;
+  /** Custom menu configuration to merge with defaults */
+  menuRegistry?: MenuRegistry;
   /** Callback for print action */
   onPrint?: () => void;
   /** Whether to show print button (default: true) */

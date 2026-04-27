@@ -10,7 +10,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { MaterialSymbol } from './MaterialSymbol';
 
 export interface MenuItem {
-  icon?: string;
+  icon?: string | ReactNode;
   label: string;
   shortcut?: string;
   onClick?: () => void;
@@ -238,7 +238,22 @@ export function MenuDropdown({ label, items, disabled }: MenuDropdownProps) {
                   }}
                   disabled={item.disabled}
                 >
-                  {item.icon && <MaterialSymbol name={item.icon} size={18} />}
+                  {item.icon &&
+                    (typeof item.icon === 'string' ? (
+                      <MaterialSymbol name={item.icon} size={18} />
+                    ) : (
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: 18,
+                          height: 18,
+                        }}
+                      >
+                        {item.icon}
+                      </span>
+                    ))}
                   <span>{item.label}</span>
                   {item.shortcut && <span style={shortcutStyle}>{item.shortcut}</span>}
                   {hasSubmenu && (

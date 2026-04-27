@@ -108,7 +108,7 @@ export function MenuBar() {
   const { t } = useTranslation();
   const ctx = useEditorToolbar();
 
-  const menuConfig = getMenuConfig(ctx, t);
+  const menuConfig = getMenuConfig(ctx, t, ctx.menuRegistry);
 
   const sortedMenus = Object.entries(menuConfig).sort(([, a], [, b]) => a.order - b.order);
 

@@ -687,6 +687,14 @@ export function IconPageBreak(props: IconProps) {
   );
 }
 
+export function IconToc(props: IconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M120-240v-80h80v80h-80Zm160 0v-80h560v80H280ZM120-440v-80h80v80h-80Zm160 0v-80h560v80H280ZM120-640v-80h80v80h-80Zm160 0v-80h560v80H280Z" />
+    </SvgIcon>
+  );
+}
+
 export function IconArrowBack(props: IconProps) {
   return (
     <SvgIcon {...props}>
@@ -909,6 +917,7 @@ const iconMap: Record<string, React.ComponentType<IconProps>> = {
   // Text direction
   format_textdirection_l_to_r: IconTextDirectionLtr,
   format_textdirection_r_to_l: IconTextDirectionRtl,
+  toc: IconToc,
 };
 
 /**

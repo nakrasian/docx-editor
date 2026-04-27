@@ -2,7 +2,6 @@ import type { MenuEntry } from './ui/MenuDropdown';
 import { ToolbarProps } from './Toolbar';
 import { TranslationKey } from '../i18n';
 import { TableGridInline } from './ui/TableGridInline';
-import { openReportIssue } from './reportIssue';
 
 export interface MenuRegistry {
   [menuId: string]: {
@@ -16,7 +15,8 @@ export interface MenuDependencies extends ToolbarProps {}
 
 export function getMenuConfig(
   deps: MenuDependencies,
-  t: (key: TranslationKey, vars?: Record<string, string | number>) => string
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+  customRegistry?: MenuRegistry
 ): MenuRegistry {
   const {
     onSave,
@@ -30,7 +30,8 @@ export function getMenuConfig(
     onInsertPageBreak,
     onInsertTOC,
   } = deps;
-  return {
+
+  const defaults: MenuRegistry = {
     file: {
       label: t('toolbar.file'),
       items: [
@@ -100,7 +101,7 @@ export function getMenuConfig(
             ),
           },
         onInsertPageBreak && {
-          icon: 'break_word',
+          icon: 'page_break',
           label: t('toolbar.pageBreak'),
           onClick: onInsertPageBreak,
         },
@@ -112,15 +113,26 @@ export function getMenuConfig(
       ].filter(Boolean) as MenuEntry[],
       order: 3,
     },
-    help: {
-      label: t('toolbar.help'),
-      items: [
-        {
-          label: t('toolbar.reportIssue'),
-          onClick: () => openReportIssue(),
-        },
-      ],
-      order: 4,
-    },
   };
+
+  if (!customRegistry) return defaults;
+
+  const merged = { ...defaults };
+
+  Object.entries(customRegistry).forEach(([menuId, customMenu]) => {
+    if (merged[menuId]) {
+      // Smart Merge: combine items, override label/order if provided
+      merged[menuId] = {
+        ...merged[menuId],
+        label: customMenu.label || merged[menuId].label,
+        items: [...merged[menuId].items, ...customMenu.items],
+        order: customMenu.order ?? merged[menuId].order,
+      };
+    } else {
+      // New Menu: just add it
+      merged[menuId] = customMenu;
+    }
+  });
+
+  return merged;
 }
