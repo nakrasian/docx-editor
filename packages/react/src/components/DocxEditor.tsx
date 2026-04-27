@@ -9,7 +9,7 @@
  * - Loading states
  */
 
-import {
+import React, {
   useRef,
   useCallback,
   useState,
@@ -237,6 +237,8 @@ export interface DocxEditorProps {
   document?: Document | null;
   /** Callback when document is saved */
   onSave?: (buffer: ArrayBuffer) => void;
+  /** Id of the editor */
+  containerId?: string;
   /** Author name used for comments and track changes */
   author?: string;
   /** Callback when document changes */
@@ -816,6 +818,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   {
     documentBuffer,
     document: initialDocument,
+    containerId,
     onSave,
     author = 'User',
     onChange,
@@ -944,7 +947,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     if (!modeProp) setEditingModeInternal(mode);
     onModeChange?.(mode);
   };
-  // 'viewing' mode acts as read-only
+
+  // 'viewing' mode acts as read
   const readOnly = readOnlyProp || editingMode === 'viewing';
   // Accessed by the stable recomputeFloatingCommentBtn callback below.
   // Kept in sync below after that callback is declared.
@@ -2985,6 +2989,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // Keyboard shortcuts for Find/Replace (Ctrl+F, Ctrl+H) and delete table selection
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!containerRef.current?.contains(document.activeElement)) return;
       // Check for Ctrl+F (Find) or Ctrl+H (Replace)
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
       const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
@@ -3523,7 +3528,6 @@ body { background: white; }
     },
     [hfEditPosition, history, pushDocument]
   );
-
   // Handle body click while in HF editing mode — save + close
   const handleBodyClick = useCallback(() => {
     if (!hfEditPosition) return;
@@ -4347,7 +4351,7 @@ body { background: white; }
             />
 
             {/* Toast notifications */}
-            <Toaster position="bottom-right" />
+            <Toaster id={containerId || ''} position="bottom-right" />
 
             {/* Lazy-loaded dialogs — only fetched when first opened */}
             <Suspense fallback={null}>
