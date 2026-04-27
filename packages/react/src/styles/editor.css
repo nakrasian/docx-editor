@@ -56,35 +56,74 @@
   /* Primary action color (Google blue) */
   --doc-primary: #1a73e8;
   --doc-primary-hover: #1557b0;
-  --doc-primary-light: #e8f0fe; /* selected/active backgrounds */
+  --doc-primary-light: #e8f0fe;
+  /* selected/active backgrounds */
 
   /* Text colors */
-  --doc-text: #202124; /* primary text */
-  --doc-text-muted: #5f6368; /* secondary text */
-  --doc-text-subtle: #9aa0a6; /* tertiary/disabled text */
-  --doc-text-placeholder: #999; /* placeholder text */
+  --doc-text: #202124;
+  /* primary text */
+  --doc-text-muted: #5f6368;
+  /* secondary text */
+  --doc-text-subtle: #9aa0a6;
+  /* tertiary/disabled text */
+  --doc-text-placeholder: #999;
+  /* placeholder text */
 
   /* Border colors */
-  --doc-border: #e0e0e0; /* standard borders */
-  --doc-border-light: #dadce0; /* lighter borders */
-  --doc-border-dark: #d0d0d0; /* darker borders (tables) */
-  --doc-border-input: #ccc; /* input borders */
+  --doc-border: #e0e0e0;
+  /* standard borders */
+  --doc-border-light: #dadce0;
+  /* lighter borders */
+  --doc-border-dark: #d0d0d0;
+  /* darker borders (tables) */
+  --doc-border-input: #ccc;
+  /* input borders */
 
   /* Background colors */
-  --doc-bg-subtle: #f5f5f5; /* subtle backgrounds */
-  --doc-bg-hover: #f1f3f4; /* hover states */
-  --doc-bg-input: #f8f9fa; /* input backgrounds */
+  --doc-bg-subtle: #f5f5f5;
+  /* subtle backgrounds */
+  --doc-bg-hover: #f1f3f4;
+  /* hover states */
+  --doc-bg-input: #f8f9fa;
+  /* input backgrounds */
 
   /* Status colors */
-  --doc-error: #c5221f; /* error states */
-  --doc-error-bg: #fce8e6; /* error backgrounds */
-  --doc-success: #34a853; /* success states */
-  --doc-success-bg: #e8f5e9; /* success backgrounds */
-  --doc-warning: #f9a825; /* warning states */
-  --doc-warning-bg: #fff8e1; /* warning backgrounds */
+  --doc-error: #c5221f;
+  /* error states */
+  --doc-error-bg: #fce8e6;
+  /* error backgrounds */
+  --doc-success: #34a853;
+  /* success states */
+  --doc-success-bg: #e8f5e9;
+  /* success backgrounds */
+  --doc-warning: #f9a825;
+  /* warning states */
+  --doc-warning-bg: #fff8e1;
+  /* warning backgrounds */
 
   /* Link color */
-  --doc-link: #0563c1; /* hyperlinks */
+  --doc-link: #0563c1;
+  /* hyperlinks */
+}
+
+/* 
+ * SPECIAL CASE: Portaled roots.
+ * They must be fixed/inset-0 so that the 'filter' containing block
+ * matches the viewport exactly.
+ */
+.docx-portal-root {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 100000;
+  display: block;
+}
+
+/* Ensure children can still be clicked */
+.docx-portal-root > div {
+  pointer-events: auto;
 }
 
 /* ============================================================================
@@ -484,10 +523,12 @@
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
+
 .layout-page-header:hover,
 .layout-page-footer:hover {
   background-color: rgba(37, 99, 235, 0.06);
 }
+
 /* Show "Double-click to edit" hint on hover when area is empty */
 .layout-page-header:empty:hover::after {
   content: 'Double-click to add header';
@@ -497,6 +538,7 @@
   font-size: 11px;
   padding: 4px 0;
 }
+
 .layout-page-footer:empty:hover::after {
   content: 'Double-click to add footer';
   display: block;
@@ -512,9 +554,11 @@
   min-height: 40px;
   padding: 4px;
 }
+
 .hf-editor-pm .ProseMirror:focus {
   outline: none;
 }
+
 .hf-editor-pm .ProseMirror p {
   display: block;
   margin: 0;
@@ -546,6 +590,7 @@
 .paged-editor--editing-header .layout-page-header > * {
   visibility: hidden;
 }
+
 .paged-editor--editing-footer .layout-page-footer > * {
   visibility: hidden;
 }
@@ -560,6 +605,7 @@
 .docx-section-break {
   position: relative;
 }
+
 .docx-section-break::after {
   content: 'Section Break (' attr(data-section-break) ')';
   display: block;
@@ -607,6 +653,7 @@
   word-break: normal;
   pointer-events: none;
 }
+
 .ProseMirror-yjs-cursor > div {
   position: absolute;
   top: -1.05em;

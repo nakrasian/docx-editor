@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useRef, useCallback, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { AIAction, SelectionContext } from '@eigenpal/docx-core/types/agentApi';
 import { getActionDescription, DEFAULT_AI_ACTIONS } from '@eigenpal/docx-core/types/agentApi';
 import { useTranslation } from '../i18n';
@@ -464,7 +465,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       top: y,
       left: x,
       minWidth: menuWidth,
-      background: 'white',
+      background: 'yellow',
       border: '1px solid var(--doc-border-light)',
       borderRadius: '8px',
       boxShadow: '0 2px 10px rgba(0, 0, 0, 0.15)',
@@ -490,53 +491,56 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
 
   if (!isOpen || !selectedText) return null;
 
-  return (
-    <div
-      ref={menuRef}
-      className={`docx-context-menu ${className}`}
-      style={getMenuStyle()}
-      role="menu"
-      aria-label={t('contextMenu.ariaLabel')}
-    >
-      {/* Header showing selected text preview */}
+  return createPortal(
+    <div className="ep-root docx-portal-root docx-portal-menu">
       <div
-        style={{
-          padding: '8px 12px',
-          borderBottom: '1px solid var(--doc-border)',
-          fontSize: '11px',
-          color: 'var(--doc-text-muted)',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
+        ref={menuRef}
+        className={`docx-context-menu ${className}`}
+        style={getMenuStyle()}
+        role="menu"
+        aria-label={t('contextMenu.ariaLabel')}
       >
-        "{selectedText.slice(0, 30)}
-        {selectedText.length > 30 ? '...' : ''}"
-      </div>
+        {/* Header showing selected text preview */}
+        <div
+          style={{
+            padding: '8px 12px',
+            borderBottom: '1px solid var(--doc-border)',
+            fontSize: '11px',
+            color: 'var(--doc-text-muted)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          "{selectedText.slice(0, 30)}
+          {selectedText.length > 30 ? '...' : ''}"
+        </div>
 
-      {/* Menu items */}
-      <div role="group">
-        {allActions.map((action, index) => (
-          <MenuItem
-            key={action}
-            action={action}
-            onClick={() => handleActionClick(action)}
-            isHighlighted={index === highlightedIndex}
-            onMouseEnter={() => setHighlightedIndex(index)}
+        {/* Menu items */}
+        <div role="group">
+          {allActions.map((action, index) => (
+            <MenuItem
+              key={action}
+              action={action}
+              onClick={() => handleActionClick(action)}
+              isHighlighted={index === highlightedIndex}
+              onMouseEnter={() => setHighlightedIndex(index)}
+            />
+          ))}
+        </div>
+
+        {/* Custom prompt dialog */}
+        {showCustomPrompt && (
+          <CustomPromptDialog
+            isOpen={showPromptDialog}
+            onSubmit={handleCustomPromptSubmit}
+            onClose={() => setShowPromptDialog(false)}
+            selectedText={selectedText}
           />
-        ))}
+        )}
       </div>
-
-      {/* Custom prompt dialog */}
-      {showCustomPrompt && (
-        <CustomPromptDialog
-          isOpen={showPromptDialog}
-          onSubmit={handleCustomPromptSubmit}
-          onClose={() => setShowPromptDialog(false)}
-          selectedText={selectedText}
-        />
-      )}
-    </div>
+    </div>,
+    document.body
   );
 };
 

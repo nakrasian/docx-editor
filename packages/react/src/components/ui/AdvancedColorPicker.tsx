@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import type { ColorValue, Theme, ThemeColorScheme } from '@eigenpal/docx-core/types/document';
 import {
@@ -476,119 +477,127 @@ export function AdvancedColorPicker({
         <MaterialSymbol name="arrow_drop_down" size={14} />
       </button>
 
-      {isOpen && (
-        <div
-          ref={dropdownRef}
-          className="docx-advanced-color-picker-dropdown"
-          style={{ ...dropdownStyle, ...S_DROPDOWN }}
-          role="dialog"
-          aria-label={`${defaultTitle} picker`}
-          onMouseDown={(e) => {
-            // Allow input elements to receive focus, prevent focus steal for everything else
-            if ((e.target as HTMLElement).tagName !== 'INPUT') {
-              e.preventDefault();
-            }
-          }}
-        >
-          {/* All modes share the same layout */}
-          <>
-            <button
-              type="button"
-              style={S_AUTO_BUTTON}
-              onClick={handleAutomatic}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              {mode === 'highlight' ? (
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: '16px',
-                    height: '16px',
-                    border: '1px solid #ccc',
-                    borderRadius: '2px',
-                    position: 'relative',
-                    backgroundColor: '#fff',
-                  }}
-                >
-                  <span
-                    style={{
-                      position: 'absolute',
-                      top: '50%',
-                      left: '-1px',
-                      right: '-1px',
-                      height: '2px',
-                      backgroundColor: '#ff0000',
-                      transform: 'rotate(-45deg)',
-                    }}
-                  />
-                </span>
-              ) : (
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: '16px',
-                    height: '16px',
-                    backgroundColor: '#000',
-                    borderRadius: '2px',
-                  }}
-                />
-              )}
-              {autoLabel ??
-                (mode === 'highlight' ? t('colorPicker.noColor') : t('colorPicker.automatic'))}
-            </button>
-            <div style={S_DIVIDER} />
-            <div style={S_SECTION_LABEL}>{t('colorPicker.themeColors')}</div>
-            <ThemeColorMatrix
-              matrix={matrix}
-              selectedColor={value}
-              theme={theme}
-              onSelect={handleThemeCellSelect}
-            />
-            <div style={S_DIVIDER} />
-            <div style={S_SECTION_LABEL}>{t('colorPicker.standardColors')}</div>
-            <StandardColorRow
-              selectedColor={value}
-              theme={theme}
-              onSelect={handleStandardColorSelect}
-            />
-            <div style={S_DIVIDER} />
-            <div style={S_SECTION_LABEL}>{t('colorPicker.customColor')}</div>
-            <div style={S_CUSTOM_ROW}>
-              <span style={{ fontSize: '12px', color: '#666' }}>#</span>
-              <input
-                type="text"
-                style={S_HEX_INPUT}
-                value={customHex}
-                onChange={(e) =>
-                  setCustomHex(e.target.value.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6))
+      {isOpen &&
+        createPortal(
+          <div className="ep-root docx-portal-root docx-portal-dropdown">
+            <div
+              ref={dropdownRef}
+              className="docx-advanced-color-picker-dropdown"
+              style={{
+                ...dropdownStyle,
+                ...S_DROPDOWN,
+                zIndex: 100000,
+              }}
+              role="dialog"
+              aria-label={`${defaultTitle} picker`}
+              onMouseDown={(e) => {
+                // Allow input elements to receive focus, prevent focus steal for everything else
+                if ((e.target as HTMLElement).tagName !== 'INPUT') {
+                  e.preventDefault();
                 }
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCustomApply();
-                }}
-                onMouseDown={(e) => {
-                  e.stopPropagation();
-                }}
-                placeholder="FF0000"
-                maxLength={6}
-                aria-label="Custom hex color"
-              />
-              <button
-                type="button"
-                style={{
-                  ...S_APPLY_BTN,
-                  opacity: /^[0-9A-Fa-f]{6}$/.test(customHex) ? 1 : 0.4,
-                  cursor: /^[0-9A-Fa-f]{6}$/.test(customHex) ? 'pointer' : 'default',
-                }}
-                onClick={handleCustomApply}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={!/^[0-9A-Fa-f]{6}$/.test(customHex)}
-              >
-                {t('common.apply')}
-              </button>
+              }}
+            >
+              {/* All modes share the same layout */}
+              <>
+                <button
+                  type="button"
+                  style={S_AUTO_BUTTON}
+                  onClick={handleAutomatic}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  {mode === 'highlight' ? (
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: '16px',
+                        height: '16px',
+                        border: '1px solid #ccc',
+                        borderRadius: '2px',
+                        position: 'relative',
+                        backgroundColor: '#fff',
+                      }}
+                    >
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: '50%',
+                          left: '-1px',
+                          right: '-1px',
+                          height: '2px',
+                          backgroundColor: '#ff0000',
+                          transform: 'rotate(-45deg)',
+                        }}
+                      />
+                    </span>
+                  ) : (
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: '16px',
+                        height: '16px',
+                        backgroundColor: '#000',
+                        borderRadius: '2px',
+                      }}
+                    />
+                  )}
+                  {autoLabel ??
+                    (mode === 'highlight' ? t('colorPicker.noColor') : t('colorPicker.automatic'))}
+                </button>
+                <div style={S_DIVIDER} />
+                <div style={S_SECTION_LABEL}>{t('colorPicker.themeColors')}</div>
+                <ThemeColorMatrix
+                  matrix={matrix}
+                  selectedColor={value}
+                  theme={theme}
+                  onSelect={handleThemeCellSelect}
+                />
+                <div style={S_DIVIDER} />
+                <div style={S_SECTION_LABEL}>{t('colorPicker.standardColors')}</div>
+                <StandardColorRow
+                  selectedColor={value}
+                  theme={theme}
+                  onSelect={handleStandardColorSelect}
+                />
+                <div style={S_DIVIDER} />
+                <div style={S_SECTION_LABEL}>{t('colorPicker.customColor')}</div>
+                <div style={S_CUSTOM_ROW}>
+                  <span style={{ fontSize: '12px', color: '#666' }}>#</span>
+                  <input
+                    type="text"
+                    style={S_HEX_INPUT}
+                    value={customHex}
+                    onChange={(e) =>
+                      setCustomHex(e.target.value.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleCustomApply();
+                    }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                    }}
+                    placeholder="FF0000"
+                    maxLength={6}
+                    aria-label="Custom hex color"
+                  />
+                  <button
+                    type="button"
+                    style={{
+                      ...S_APPLY_BTN,
+                      opacity: /^[0-9A-Fa-f]{6}$/.test(customHex) ? 1 : 0.4,
+                      cursor: /^[0-9A-Fa-f]{6}$/.test(customHex) ? 'pointer' : 'default',
+                    }}
+                    onClick={handleCustomApply}
+                    onMouseDown={(e) => e.preventDefault()}
+                    disabled={!/^[0-9A-Fa-f]{6}$/.test(customHex)}
+                  >
+                    {t('common.apply')}
+                  </button>
+                </div>
+              </>
             </div>
-          </>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

@@ -7,6 +7,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
@@ -364,119 +365,119 @@ export function HyperlinkPopup({
   const popupTop = anchorRect.bottom + 4;
   const popupLeft = anchorRect.left;
 
-  if (mode === 'edit') {
-    return (
-      <div
-        ref={popupRef}
-        className="ep-hyperlink-popup ep-hyperlink-popup--edit"
-        style={{
-          ...EDIT_POPUP_STYLE,
-          top: popupTop,
-          left: popupLeft,
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {/* Text field */}
-        <div style={EDIT_ROW_STYLE}>
-          <span style={ICON_STYLE}>
-            <TextIcon />
-          </span>
-          <input
-            ref={textInputRef}
-            type="text"
-            style={EDIT_INPUT_STYLE}
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onKeyDown={handleEditKeyDown}
-            placeholder={t('hyperlinkPopup.displayTextPlaceholder')}
-            onFocus={(e) => (e.target.style.borderColor = '#1a73e8')}
-            onBlur={(e) => (e.target.style.borderColor = '#dadce0')}
-          />
-        </div>
+  return createPortal(
+    <div className="ep-root docx-portal-root docx-portal-tooltip">
+      {mode === 'edit' ? (
+        <div
+          ref={popupRef}
+          className="ep-hyperlink-popup ep-hyperlink-popup--edit"
+          style={{
+            ...EDIT_POPUP_STYLE,
+            top: popupTop,
+            left: popupLeft,
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {/* Text field */}
+          <div style={EDIT_ROW_STYLE}>
+            <span style={ICON_STYLE}>
+              <TextIcon />
+            </span>
+            <input
+              ref={textInputRef}
+              type="text"
+              style={EDIT_INPUT_STYLE}
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={handleEditKeyDown}
+              placeholder={t('hyperlinkPopup.displayTextPlaceholder')}
+              onFocus={(e) => (e.target.style.borderColor = '#1a73e8')}
+              onBlur={(e) => (e.target.style.borderColor = '#dadce0')}
+            />
+          </div>
 
-        {/* URL field + Apply */}
-        <div style={{ ...EDIT_ROW_STYLE, marginBottom: 0 }}>
+          {/* URL field + Apply */}
+          <div style={{ ...EDIT_ROW_STYLE, marginBottom: 0 }}>
+            <span style={ICON_STYLE}>
+              <LinkIcon />
+            </span>
+            <input
+              type="text"
+              style={EDIT_INPUT_STYLE}
+              value={editUrl}
+              onChange={(e) => setEditUrl(e.target.value)}
+              onKeyDown={handleEditKeyDown}
+              placeholder={t('hyperlinkPopup.urlPlaceholder')}
+              onFocus={(e) => (e.target.style.borderColor = '#1a73e8')}
+              onBlur={(e) => (e.target.style.borderColor = '#dadce0')}
+            />
+            <button
+              type="button"
+              style={{
+                ...APPLY_BUTTON_STYLE,
+                opacity: editUrl.trim() ? 1 : 0.5,
+                cursor: editUrl.trim() ? 'pointer' : 'default',
+              }}
+              onClick={handleApply}
+              disabled={!editUrl.trim()}
+            >
+              {t('common.apply')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div
+          ref={popupRef}
+          className="ep-hyperlink-popup"
+          style={{
+            ...POPUP_STYLE,
+            top: popupTop,
+            left: popupLeft,
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {/* Globe icon */}
           <span style={ICON_STYLE}>
-            <LinkIcon />
+            <GlobeIcon />
           </span>
-          <input
-            type="text"
-            style={EDIT_INPUT_STYLE}
-            value={editUrl}
-            onChange={(e) => setEditUrl(e.target.value)}
-            onKeyDown={handleEditKeyDown}
-            placeholder={t('hyperlinkPopup.urlPlaceholder')}
-            onFocus={(e) => (e.target.style.borderColor = '#1a73e8')}
-            onBlur={(e) => (e.target.style.borderColor = '#dadce0')}
-          />
-          <button
-            type="button"
-            style={{
-              ...APPLY_BUTTON_STYLE,
-              opacity: editUrl.trim() ? 1 : 0.5,
-              cursor: editUrl.trim() ? 'pointer' : 'default',
+
+          {/* Clickable URL */}
+          <a
+            href={data.href}
+            style={URL_LINK_STYLE}
+            title={data.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => {
+              e.preventDefault();
+              onNavigate(data.href);
             }}
-            onClick={handleApply}
-            disabled={!editUrl.trim()}
           >
-            {t('common.apply')}
-          </button>
+            {data.href}
+          </a>
+
+          <span style={SEPARATOR_STYLE} />
+
+          {/* Copy button */}
+          <PopupIconButton title={t('hyperlinkPopup.copyLink')} onClick={handleCopy}>
+            <CopyIcon />
+          </PopupIconButton>
+
+          {!readOnly && (
+            <>
+              <PopupIconButton title={t('hyperlinkPopup.editLink')} onClick={handleEditClick}>
+                <EditIcon />
+              </PopupIconButton>
+
+              <PopupIconButton title={t('hyperlinkPopup.removeLink')} onClick={onRemove}>
+                <UnlinkIcon />
+              </PopupIconButton>
+            </>
+          )}
         </div>
-      </div>
-    );
-  }
-
-  // View mode
-  return (
-    <div
-      ref={popupRef}
-      className="ep-hyperlink-popup"
-      style={{
-        ...POPUP_STYLE,
-        top: popupTop,
-        left: popupLeft,
-      }}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      {/* Globe icon */}
-      <span style={ICON_STYLE}>
-        <GlobeIcon />
-      </span>
-
-      {/* Clickable URL */}
-      <a
-        href={data.href}
-        style={URL_LINK_STYLE}
-        title={data.href}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => {
-          e.preventDefault();
-          onNavigate(data.href);
-        }}
-      >
-        {data.href}
-      </a>
-
-      <span style={SEPARATOR_STYLE} />
-
-      {/* Copy button */}
-      <PopupIconButton title={t('hyperlinkPopup.copyLink')} onClick={handleCopy}>
-        <CopyIcon />
-      </PopupIconButton>
-
-      {!readOnly && (
-        <>
-          <PopupIconButton title={t('hyperlinkPopup.editLink')} onClick={handleEditClick}>
-            <EditIcon />
-          </PopupIconButton>
-
-          <PopupIconButton title={t('hyperlinkPopup.removeLink')} onClick={onRemove}>
-            <UnlinkIcon />
-          </PopupIconButton>
-        </>
       )}
-    </div>
+    </div>,
+    document.body
   );
 }
 

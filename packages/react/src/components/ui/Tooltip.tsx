@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 
 interface TooltipProps {
   content: React.ReactNode;
@@ -64,23 +65,27 @@ export function Tooltip({ content, children, side = 'bottom', delayMs = 400 }: T
   return (
     <>
       {child}
-      {isOpen && (
-        <div
-          className="fixed z-50 px-2 py-1 text-xs font-medium text-white bg-slate-900 rounded-md shadow-lg"
-          style={{
-            left: position.x,
-            top: position.y,
-            transform:
-              side === 'top'
-                ? 'translate(-50%, -100%)'
-                : side === 'bottom'
-                  ? 'translate(-50%, 0)'
-                  : undefined,
-          }}
-        >
-          {content}
-        </div>
-      )}
+      {isOpen &&
+        createPortal(
+          <div className="ep-root docx-portal-root docx-portal-tooltip">
+            <div
+              className="fixed z-[10001] px-2 py-1 text-xs font-medium text-white bg-slate-900 rounded-md shadow-lg pointer-events-none"
+              style={{
+                left: position.x,
+                top: position.y,
+                transform:
+                  side === 'top'
+                    ? 'translate(-50%, -100%)'
+                    : side === 'bottom'
+                      ? 'translate(-50%, 0)'
+                      : undefined,
+              }}
+            >
+              {content}
+            </div>
+          </div>,
+          document.body
+        )}
     </>
   );
 }

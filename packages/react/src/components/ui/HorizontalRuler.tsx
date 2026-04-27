@@ -11,6 +11,7 @@
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import type { SectionProperties, TabStop } from '@eigenpal/docx-core/types/document';
 import { twipsToPixels, pixelsToTwips, formatPx } from '@eigenpal/docx-core/utils/units';
@@ -101,7 +102,7 @@ export function HorizontalRuler({
   const [dragging, setDragging] = useState<MarkerType | null>(null);
   const [hoveredMarker, setHoveredMarker] = useState<MarkerType | null>(null);
   const [dragValue, setDragValue] = useState<number | null>(null);
-  const [dragPositionPx, setDragPositionPx] = useState<number | null>(null);
+  const [dragViewportPos, setDragViewportPos] = useState<{ x: number; y: number } | null>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
 
   // Page dimensions
@@ -142,7 +143,7 @@ export function HorizontalRuler({
 
       const rect = rulerRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      setDragPositionPx(x);
+      setDragViewportPos({ x: e.clientX, y: rect.top });
       const positionTwips = pixelsToTwips(x / zoom);
 
       if (dragging === 'leftMargin') {
@@ -198,7 +199,7 @@ export function HorizontalRuler({
   const handleDragEnd = useCallback(() => {
     setDragging(null);
     setDragValue(null);
-    setDragPositionPx(null);
+    setDragViewportPos(null);
   }, []);
 
   useEffect(() => {
@@ -332,8 +333,12 @@ export function HorizontalRuler({
       ))}
 
       {/* Drag tooltip */}
-      {dragging && dragValue !== null && dragPositionPx !== null && (
-        <DragTooltip value={formatValueForTooltip(dragValue, unit)} positionPx={dragPositionPx} />
+      {dragging && dragValue !== null && dragViewportPos !== null && (
+        <DragTooltip
+          value={formatValueForTooltip(dragValue, unit)}
+          x={dragViewportPos.x}
+          y={dragViewportPos.y}
+        />
       )}
     </div>
   );
@@ -465,33 +470,30 @@ function IndentTriangle({
   );
 }
 
-function DragTooltip({
-  value,
-  positionPx,
-}: {
-  value: string;
-  positionPx: number;
-}): React.ReactElement {
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        left: formatPx(positionPx),
-        top: -22,
-        transform: 'translateX(-50%)',
-        backgroundColor: '#333',
-        color: '#fff',
-        fontSize: '10px',
-        fontFamily: 'sans-serif',
-        padding: '2px 6px',
-        borderRadius: 3,
-        whiteSpace: 'nowrap',
-        pointerEvents: 'none',
-        zIndex: 20,
-      }}
-    >
-      {value}
-    </div>
+function DragTooltip({ value, x, y }: { value: string; x: number; y: number }): React.ReactElement {
+  return createPortal(
+    <div className="ep-root docx-portal-root docx-portal-tooltip">
+      <div
+        style={{
+          position: 'fixed',
+          left: formatPx(x),
+          top: formatPx(y - 25),
+          transform: 'translateX(-50%)',
+          backgroundColor: '#333',
+          color: '#fff',
+          fontSize: '10px',
+          fontFamily: 'sans-serif',
+          padding: '2px 6px',
+          borderRadius: 3,
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          zIndex: 20,
+        }}
+      >
+        {value}
+      </div>
+    </div>,
+    document.body
   );
 }
 

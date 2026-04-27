@@ -6,6 +6,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from '../i18n';
 import type { TranslationKey } from '../i18n';
 import defaultLocale from '../../i18n/en.json';
@@ -600,33 +601,36 @@ export const TextContextMenu: React.FC<TextContextMenuProps> = ({
 
   if (!isOpen) return null;
 
-  return (
-    <div
-      ref={menuRef}
-      className={`docx-text-context-menu ${className}`}
-      style={getMenuStyle()}
-      role="menu"
-      aria-label={t('contextMenu.textMenuAriaLabel')}
-    >
-      {menuItems.map((item, index) => {
-        // Find the index in navigable items for highlighting
-        const navigableIndex = navigableItems.findIndex((ni) => ni === item);
+  return createPortal(
+    <div className="ep-root docx-portal-root docx-portal-menu">
+      <div
+        ref={menuRef}
+        className={`docx-text-context-menu ${className}`}
+        style={getMenuStyle()}
+        role="menu"
+        aria-label={t('contextMenu.textMenuAriaLabel')}
+      >
+        {menuItems.map((item, index) => {
+          // Find the index in navigable items for highlighting
+          const navigableIndex = navigableItems.findIndex((ni) => ni === item);
 
-        return (
-          <MenuItemComponent
-            key={`${item.action}-${index}`}
-            item={item}
-            onClick={() => handleItemClick(item)}
-            isHighlighted={navigableIndex === highlightedIndex}
-            onMouseEnter={() => {
-              if (navigableIndex >= 0 && !item.disabled) {
-                setHighlightedIndex(navigableIndex);
-              }
-            }}
-          />
-        );
-      })}
-    </div>
+          return (
+            <MenuItemComponent
+              key={`${item.action}-${index}`}
+              item={item}
+              onClick={() => handleItemClick(item)}
+              isHighlighted={navigableIndex === highlightedIndex}
+              onMouseEnter={() => {
+                if (navigableIndex >= 0 && !item.disabled) {
+                  setHighlightedIndex(navigableIndex);
+                }
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>,
+    document.body
   );
 };
 

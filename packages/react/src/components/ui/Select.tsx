@@ -53,7 +53,7 @@ function SelectContent({
   return (
     <SelectPrimitive.Portal>
       {/* Wrap in .ep-root so Tailwind scoped utilities apply inside the portal */}
-      <div className="ep-root">
+      <div className="ep-root docx-portal-root docx-portal-dropdown">
         <SelectPrimitive.Content
           className={cn(
             'relative z-50 max-h-72 min-w-[8rem] overflow-hidden',

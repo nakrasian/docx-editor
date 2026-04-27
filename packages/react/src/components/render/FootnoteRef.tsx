@@ -10,6 +10,7 @@
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode } from 'react';
 import type {
   Footnote,
@@ -82,8 +83,8 @@ function FootnoteTooltip({
     if (visible && anchorRef.current) {
       const rect = anchorRef.current.getBoundingClientRect();
       setPosition({
-        top: rect.bottom + window.scrollY + 4,
-        left: rect.left + window.scrollX,
+        top: rect.bottom + 4,
+        left: rect.left,
       });
     }
   }, [visible, anchorRef]);
@@ -95,32 +96,35 @@ function FootnoteTooltip({
   // Extract preview text from footnote content
   const previewText = getNotePreviewText(content, 150);
 
-  return (
-    <div
-      className={`docx-note-tooltip docx-${type}-tooltip`}
-      style={{
-        position: 'absolute',
-        top: position.top,
-        left: position.left,
-        zIndex: 1000,
-        maxWidth: '300px',
-        padding: '8px 12px',
-        backgroundColor: '#fff',
-        border: '1px solid #ccc',
-        borderRadius: '4px',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-        fontSize: '12px',
-        lineHeight: '1.4',
-        color: '#333',
-        pointerEvents: 'none',
-      }}
-      role="tooltip"
-    >
-      <div style={{ fontWeight: 'bold', marginBottom: '4px', fontSize: '11px', color: '#666' }}>
-        {type === 'footnote' ? 'Footnote' : 'Endnote'} {content.id}
+  return createPortal(
+    <div className="ep-root docx-portal-root docx-portal-tooltip">
+      <div
+        className={`docx-note-tooltip docx-${type}-tooltip`}
+        style={{
+          position: 'fixed',
+          top: position.top,
+          left: position.left,
+          zIndex: 10000,
+          maxWidth: '300px',
+          padding: '8px 12px',
+          backgroundColor: '#fff',
+          border: '1px solid #ccc',
+          borderRadius: '4px',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+          fontSize: '12px',
+          lineHeight: '1.4',
+          color: '#333',
+          pointerEvents: 'none',
+        }}
+        role="tooltip"
+      >
+        <div style={{ fontWeight: 'bold', marginBottom: '4px', fontSize: '11px', color: '#666' }}>
+          {type === 'footnote' ? 'Footnote' : 'Endnote'} {content.id}
+        </div>
+        <div>{previewText}</div>
       </div>
-      <div>{previewText}</div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode } from 'react';
 import type { ParagraphAlignment } from '@eigenpal/docx-core/types/document';
 import { MaterialSymbol } from './MaterialSymbol';
@@ -195,63 +196,69 @@ export function AlignmentButtons({
     <div ref={containerRef} style={{ position: 'relative', display: 'inline-block' }}>
       {!isOpen ? <Tooltip content={ariaText}>{triggerButton}</Tooltip> : triggerButton}
 
-      {isOpen && !disabled && (
-        <div
-          ref={dropdownRef}
-          style={{
-            ...dropdownStyle,
-            backgroundColor: 'white',
-            border: '1px solid var(--doc-border)',
-            borderRadius: 8,
-            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12)',
-            padding: 6,
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div style={{ display: 'flex', gap: 2 }}>
-            {ALIGNMENT_OPTIONS.map((option) => {
-              const isActive = value === option.value;
-              const optLabel = t(option.labelKey);
-              const optShortcut = option.shortcutKey ? t(option.shortcutKey) : undefined;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  title={`${optLabel}${optShortcut ? ` (${optShortcut})` : ''}`}
-                  data-testid={`alignment-${option.value}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 32,
-                    height: 32,
-                    border: '1px solid transparent',
-                    borderRadius: 4,
-                    backgroundColor: isActive ? 'var(--doc-primary-light)' : 'transparent',
-                    cursor: 'pointer',
-                    color: isActive ? 'var(--doc-primary)' : 'var(--doc-text)',
-                  }}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onMouseEnter={(e) => {
-                    if (!isActive) {
-                      (e.currentTarget as HTMLButtonElement).style.backgroundColor =
-                        'var(--doc-bg-hover)';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLButtonElement).style.backgroundColor = isActive
-                      ? 'var(--doc-primary-light)'
-                      : 'transparent';
-                  }}
-                  onClick={() => handleOptionClick(option.value)}
-                >
-                  <MaterialSymbol name={option.iconName} size={18} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {isOpen &&
+        !disabled &&
+        createPortal(
+          <div className="ep-root docx-portal-root docx-portal-dropdown">
+            <div
+              ref={dropdownRef}
+              style={{
+                ...dropdownStyle,
+                backgroundColor: 'white',
+                border: '1px solid var(--doc-border)',
+                borderRadius: 8,
+                boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12)',
+                padding: 6,
+                zIndex: 100000,
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', gap: 2 }}>
+                {ALIGNMENT_OPTIONS.map((option) => {
+                  const isActive = value === option.value;
+                  const optLabel = t(option.labelKey);
+                  const optShortcut = option.shortcutKey ? t(option.shortcutKey) : undefined;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      title={`${optLabel}${optShortcut ? ` (${optShortcut})` : ''}`}
+                      data-testid={`alignment-${option.value}`}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 32,
+                        height: 32,
+                        border: '1px solid transparent',
+                        borderRadius: 4,
+                        backgroundColor: isActive ? 'var(--doc-primary-light)' : 'transparent',
+                        cursor: 'pointer',
+                        color: isActive ? 'var(--doc-primary)' : 'var(--doc-text)',
+                      }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={(e) => {
+                        if (!isActive) {
+                          (e.currentTarget as HTMLButtonElement).style.backgroundColor =
+                            'var(--doc-bg-hover)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget as HTMLButtonElement).style.backgroundColor = isActive
+                          ? 'var(--doc-primary-light)'
+                          : 'transparent';
+                      }}
+                      onClick={() => handleOptionClick(option.value)}
+                    >
+                      <MaterialSymbol name={option.iconName} size={18} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

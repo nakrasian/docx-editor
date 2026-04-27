@@ -20,6 +20,7 @@ import {
   lazy,
   Suspense,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode } from 'react';
 import type {
   Document,
@@ -536,71 +537,77 @@ function EditingModeDropdown({
         <MaterialSymbol name="arrow_drop_down" size={16} />
       </button>
 
-      {isOpen && (
-        <div
-          ref={dropdownRef}
-          onMouseDown={(e) => e.preventDefault()}
-          style={{
-            position: 'fixed',
-            top: pos.top,
-            left: pos.left,
-            backgroundColor: 'white',
-            border: '1px solid var(--doc-border, #d1d5db)',
-            borderRadius: 8,
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12)',
-            padding: '4px 0',
-            zIndex: 10000,
-            minWidth: 220,
-          }}
-        >
-          {EDITING_MODES.map((m) => (
-            <button
-              key={m.value}
-              type="button"
+      {isOpen &&
+        createPortal(
+          <div className="ep-root docx-portal-root docx-portal-dropdown">
+            <div
+              ref={dropdownRef}
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                onModeChange(m.value);
-                setIsOpen(false);
-              }}
-              onMouseOver={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.backgroundColor =
-                  'var(--doc-hover, #f3f4f6)';
-              }}
-              onMouseOut={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.backgroundColor = 'transparent';
-              }}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '8px 12px',
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                fontSize: 13,
-                color: 'var(--doc-text, #374151)',
-                width: '100%',
-                textAlign: 'left',
+                position: 'fixed',
+                top: pos.top,
+                left: pos.left,
+                backgroundColor: 'white',
+                border: '1px solid var(--doc-border, #d1d5db)',
+                borderRadius: 8,
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12)',
+                padding: '4px 0',
+                zIndex: 10000,
+                minWidth: 220,
               }}
             >
-              <MaterialSymbol name={m.icon} size={20} />
-              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                <span style={{ fontWeight: 500 }}>{m.label}</span>
-                <span style={{ fontSize: 11, color: 'var(--doc-text-muted, #9ca3af)' }}>
-                  {m.desc}
-                </span>
-              </span>
-              {m.value === mode && (
-                <MaterialSymbol
-                  name="check"
-                  size={18}
-                  style={{ marginLeft: 'auto', color: '#1a73e8' }}
-                />
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+              {EDITING_MODES.map((m) => (
+                <button
+                  key={m.value}
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    onModeChange(m.value);
+                    setIsOpen(false);
+                  }}
+                  onMouseOver={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.backgroundColor =
+                      'var(--doc-hover, #f3f4f6)';
+                  }}
+                  onMouseOut={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.backgroundColor = 'transparent';
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '8px 12px',
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    color: 'var(--doc-text, #374151)',
+                    width: '100%',
+                    textAlign: 'left',
+                  }}
+                >
+                  <MaterialSymbol name={m.icon} size={20} />
+                  <span
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}
+                  >
+                    <span style={{ fontWeight: 500 }}>{m.label}</span>
+                    <span style={{ fontSize: 11, color: 'var(--doc-text-muted, #9ca3af)' }}>
+                      {m.desc}
+                    </span>
+                  </span>
+                  {m.value === mode && (
+                    <MaterialSymbol
+                      name="check"
+                      size={18}
+                      style={{ marginLeft: 'auto', color: '#1a73e8' }}
+                    />
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
