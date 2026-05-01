@@ -46,6 +46,7 @@ import {
 // Nodes
 import { HardBreakExtension } from './nodes/HardBreakExtension';
 import { TabExtension } from './nodes/TabExtension';
+import { CitationExtension } from './nodes/CitationExtension';
 import { ImageExtension } from './nodes/ImageExtension';
 import { TextBoxExtension } from './nodes/TextBoxExtension';
 import { ShapeExtension } from './nodes/ShapeExtension';
@@ -66,6 +67,7 @@ import { DropCursorExtension } from './features/DropCursorExtension';
 import { ParagraphChangeTrackerExtension } from './features/ParagraphChangeTrackerExtension';
 import { BidiShortcutExtension } from './features/BidiShortcutExtension';
 import { PasteStyleInlinerExtension } from './features/PasteStyleInlinerExtension';
+import { CrossEditorDragExtension } from './features/CrossEditorDragExtension';
 
 export interface StarterKitOptions {
   /** Extensions to disable by name */
@@ -132,6 +134,7 @@ export function createStarterKit(options: StarterKitOptions = {}): AnyExtension[
   // Nodes
   add('hardBreak', HardBreakExtension());
   add('tab', TabExtension());
+  add('citation', CitationExtension());
   add('image', ImageExtension());
   add('textBox', TextBoxExtension());
   add('shape', ShapeExtension());
@@ -161,6 +164,7 @@ export function createStarterKit(options: StarterKitOptions = {}): AnyExtension[
   );
   add('paragraphChangeTracker', ParagraphChangeTrackerExtension());
   add('bidiShortcut', BidiShortcutExtension());
+  add('crossEditorDrag', CrossEditorDragExtension());
 
   return extensions;
 }

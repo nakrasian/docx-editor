@@ -447,6 +447,12 @@ function extractParagraphContent(
       currentHyperlink = null;
     }
 
+    // Inline citation atom — invisible metadata, skip during serialization.
+    // Display content lives in the adjacent plain-text node.
+    if (node.type.name === 'citation') {
+      return;
+    }
+
     // Handle node types
     if (node.isText) {
       const marksKey = getMarksKey(node.marks);
