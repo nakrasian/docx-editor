@@ -67,7 +67,6 @@ import { DropCursorExtension } from './features/DropCursorExtension';
 import { ParagraphChangeTrackerExtension } from './features/ParagraphChangeTrackerExtension';
 import { BidiShortcutExtension } from './features/BidiShortcutExtension';
 import { PasteStyleInlinerExtension } from './features/PasteStyleInlinerExtension';
-import { CrossEditorDragExtension } from './features/CrossEditorDragExtension';
 
 export interface StarterKitOptions {
   /** Extensions to disable by name */
@@ -164,7 +163,5 @@ export function createStarterKit(options: StarterKitOptions = {}): AnyExtension[
   );
   add('paragraphChangeTracker', ParagraphChangeTrackerExtension());
   add('bidiShortcut', BidiShortcutExtension());
-  add('crossEditorDrag', CrossEditorDragExtension());
-
   return extensions;
 }
