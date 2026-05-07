@@ -101,13 +101,21 @@ function findPositionInSpan(spanEl: HTMLElement, clientX: number, _clientY: numb
     return clientX < midpoint ? pmStart : pmEnd;
   }
 
-  const textNode = spanEl.firstChild;
-  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+  // Hyperlink spans wrap their text inside <a>, so look through it if needed.
+  const rawChild = spanEl.firstChild;
+  const resolvedTextNode: Text | null =
+    rawChild?.nodeType === Node.TEXT_NODE
+      ? (rawChild as Text)
+      : rawChild?.nodeName === 'A' && rawChild.firstChild?.nodeType === Node.TEXT_NODE
+        ? (rawChild.firstChild as Text)
+        : null;
+
+  if (!resolvedTextNode) {
     // No text content - return start position
     return pmStart;
   }
 
-  const text = textNode as Text;
+  const text = resolvedTextNode;
   const textLength = text.length;
 
   if (textLength === 0) {

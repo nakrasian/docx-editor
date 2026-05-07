@@ -2129,9 +2129,17 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             continue; // Skip to next span
           }
 
-          // For text runs, use inclusive range
-          if (pmPos >= pmStart && pmPos <= pmEnd && span.firstChild?.nodeType === Node.TEXT_NODE) {
-            const textNode = span.firstChild as Text;
+          // For text runs, use inclusive range.
+          // Hyperlink spans wrap their text in <a>, so also check span.firstChild.firstChild.
+          const spanTextNode: Text | null =
+            span.firstChild?.nodeType === Node.TEXT_NODE
+              ? (span.firstChild as Text)
+              : span.firstChild?.nodeName === 'A' &&
+                  span.firstChild.firstChild?.nodeType === Node.TEXT_NODE
+                ? (span.firstChild.firstChild as Text)
+                : null;
+          if (pmPos >= pmStart && pmPos <= pmEnd && spanTextNode) {
+            const textNode = spanTextNode;
             const charIndex = Math.min(pmPos - pmStart, textNode.length);
 
             // Create a range at the exact character position

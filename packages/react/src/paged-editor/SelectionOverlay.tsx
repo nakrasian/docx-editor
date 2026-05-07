@@ -61,7 +61,14 @@ const overlayStyles: React.CSSProperties = {
   bottom: 0,
   pointerEvents: 'none',
   zIndex: 10,
-  overflow: 'hidden',
+  // Must be 'visible', not 'hidden': the viewport div uses transform:scale(zoom)
+  // which means layout coordinates and screen coordinates diverge when zoom < 1.
+  // With a narrow pane the page is centred but its left edge sits at a negative
+  // layout-x; the caret on an empty line falls at that negative x and would be
+  // clipped by overflow:hidden even though it is fully visible on screen after
+  // the scale transform. The outer docx-container (overflow:hidden) is the real
+  // viewport boundary, so 'visible' here is safe.
+  overflow: 'visible',
 };
 
 const caretStyles = (
