@@ -245,12 +245,22 @@ function renderTextRun(run: TextRun, doc: Document, resolvedCommentIds?: Set<num
       anchor.title = run.hyperlink.tooltip;
     }
     anchor.textContent = run.text;
-    // Style hyperlink — default Word hyperlink color is blue (#0563c1)
-    const hyperlinkColor = run.color || '#0563c1';
-    anchor.style.color = hyperlinkColor;
-    anchor.style.textDecoration = 'underline';
-    // Override span color to match anchor (prevents color mismatch in selection)
-    span.style.color = hyperlinkColor;
+
+    if (run.hyperlink.href.startsWith('researcher://')) {
+      // researcher:// links are rendered as plain text — colour, underline, and
+      // pointer-events are controlled entirely by the researcher app's CSS so
+      // that no inline style can accidentally override them.  A data attribute
+      // gives the CSS a stable, scheme-independent hook to target.
+      anchor.dataset.researcherLink = '';
+    } else {
+      // Style hyperlink — default Word hyperlink color is blue (#0563c1)
+      const hyperlinkColor = run.color || '#0563c1';
+      anchor.style.color = hyperlinkColor;
+      anchor.style.textDecoration = 'underline';
+      // Override span color to match anchor (prevents color mismatch in selection)
+      span.style.color = hyperlinkColor;
+    }
+
     span.appendChild(anchor);
   } else {
     // Set text content

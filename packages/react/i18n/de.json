@@ -36,7 +36,10 @@
     "tableOfContents": "Inhaltsverzeichnis",
     "symbol": "Symbol",
     "help": "Hilfe",
-    "reportIssue": "Problem melden"
+    "reportIssue": "Problem melden",
+    "clearFormatting": null,
+    "save": null,
+    "saveShortcut": null
   },
   "formattingBar": {
     "groups": {
@@ -106,7 +109,10 @@
     "subtitle": "Untertitel",
     "heading1": "Überschrift 1",
     "heading2": "Überschrift 2",
-    "heading3": "Überschrift 3"
+    "heading3": "Überschrift 3",
+    "heading4": null,
+    "heading5": null,
+    "heading6": null
   },
   "font": {
     "selectAriaLabel": "Schriftart auswählen",

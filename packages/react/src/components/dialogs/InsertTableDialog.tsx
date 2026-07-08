@@ -137,7 +137,7 @@ const GRID_CELL_STYLE: CSSProperties = {
 const GRID_CELL_SELECTED_STYLE: CSSProperties = {
   ...GRID_CELL_STYLE,
   backgroundColor: 'var(--doc-primary)',
-  borderColor: 'var(--doc-primary)',
+  border: '1px solid var(--doc-primary)',
 };
 
 const GRID_LABEL_STYLE: CSSProperties = {

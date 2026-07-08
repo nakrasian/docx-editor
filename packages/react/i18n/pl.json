@@ -36,7 +36,10 @@
     "tableOfContents": "Spis treści",
     "symbol": "Symbol",
     "help": "Pomoc",
-    "reportIssue": "Zgłoś problem"
+    "reportIssue": "Zgłoś problem",
+    "clearFormatting": null,
+    "save": null,
+    "saveShortcut": null
   },
   "formattingBar": {
     "groups": {
@@ -106,7 +109,10 @@
     "subtitle": "Podtytuł",
     "heading1": "Nagłówek 1",
     "heading2": "Nagłówek 2",
-    "heading3": "Nagłówek 3"
+    "heading3": "Nagłówek 3",
+    "heading4": null,
+    "heading5": null,
+    "heading6": null
   },
   "font": {
     "selectAriaLabel": "Wybierz rodzinę czcionek",

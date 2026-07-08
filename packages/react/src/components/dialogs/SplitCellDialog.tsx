@@ -200,7 +200,7 @@ export function SplitCellDialog({
               ...btnStyle,
               backgroundColor: 'var(--doc-primary)',
               color: 'white',
-              borderColor: 'var(--doc-primary)',
+              border: '1px solid var(--doc-primary)',
               opacity: validationError ? 0.6 : 1,
               cursor: validationError ? 'not-allowed' : 'pointer',
             }}

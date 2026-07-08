@@ -110,7 +110,7 @@ import { useVisualLineNavigation } from './useVisualLineNavigation';
 import { useDragAutoScroll } from './useDragAutoScroll';
 
 // Sidebar constants
-import { SIDEBAR_DOCUMENT_SHIFT } from '../components/sidebar/constants';
+import { SIDEBAR_WIDTH, SIDEBAR_PAGE_GAP } from '../components/sidebar/constants';
 
 // Types
 import type {
@@ -184,6 +184,8 @@ export interface PagedEditorProps {
   style?: CSSProperties;
   /** Whether comments sidebar is open (shifts document left). */
   commentsSidebarOpen?: boolean;
+  /** Sidebar column width in px. Defaults to SIDEBAR_WIDTH. */
+  sidebarWidth?: number;
   /** Sidebar overlay rendered inside the scroll container (scrolls with document). */
   sidebarOverlay?: React.ReactNode;
   /** Ref callback for the scroll container element. */
@@ -1579,6 +1581,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       className,
       style,
       commentsSidebarOpen = false,
+      sidebarWidth: sidebarWidthProp,
       sidebarOverlay,
       scrollContainerRef: scrollContainerRefProp,
       onHyperlinkClick,
@@ -2044,6 +2047,8 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
      * Ref holding a pending requestAnimationFrame ID and the latest state.
      * Multiple rapid transactions (e.g. typing "hello") within the same frame
      * are coalesced so only the final state triggers a full layout pass.
+     *
+     * rafId = -1 means a debounce timer is pending (not a rAF yet).
      */
     const pendingLayoutRef = useRef<{
       rafId: number;
@@ -2051,35 +2056,89 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     } | null>(null);
 
     /**
+     * Debounce timer for typing-triggered layouts.
+     * Regular single-character edits wait this long after the last keystroke
+     * before running the (expensive) full layout pipeline. Paste / undo / redo
+     * and other bulk edits bypass this and schedule immediately via rAF.
+     *
+     * Why 150ms: layout takes ~80ms on a large document. Without debouncing,
+     * rapid typing triggers back-to-back layout cycles that block the main
+     * thread continuously (perf/issues.md §2). 150ms keeps pagination
+     * feeling live while allowing bursts of 10+ chars to coalesce.
+     */
+    const layoutDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const TYPING_LAYOUT_DEBOUNCE_MS = 150;
+
+    /**
      * Schedule a layout pipeline run for the next animation frame.
-     * If a run is already scheduled, the pending state is replaced so only
-     * the most recent document state gets laid out.
+     *
+     * @param state  The latest editor state to layout.
+     * @param debounce  When true (default for single-char typing), wait
+     *   TYPING_LAYOUT_DEBOUNCE_MS of inactivity before running. When false
+     *   (paste, undo, redo, multi-step ops), run immediately via rAF.
      */
     const scheduleLayout = useCallback(
-      (state: EditorState) => {
+      (state: EditorState, debounce = false) => {
+        // Always store the latest state so the eventual layout uses current doc.
         if (pendingLayoutRef.current) {
-          // Already scheduled — just update the state to the latest
           pendingLayoutRef.current.state = state;
-          return;
         }
-        const rafId = requestAnimationFrame(() => {
-          const pending = pendingLayoutRef.current;
-          pendingLayoutRef.current = null;
-          if (pending) {
-            runLayoutPipeline(pending.state);
+
+        if (debounce) {
+          // Typing path: coalesce keystrokes — run layout after idle pause.
+          if (layoutDebounceRef.current) {
+            clearTimeout(layoutDebounceRef.current);
           }
-        });
-        pendingLayoutRef.current = { rafId, state };
+          // Mark a pending layout with sentinel rafId=-1 so callers know
+          // a layout is coming even though no rAF has been registered yet.
+          if (!pendingLayoutRef.current) {
+            pendingLayoutRef.current = { rafId: -1, state };
+          }
+          layoutDebounceRef.current = setTimeout(() => {
+            layoutDebounceRef.current = null;
+            const pending = pendingLayoutRef.current;
+            if (!pending) return;
+            const rafId = requestAnimationFrame(() => {
+              const p = pendingLayoutRef.current;
+              pendingLayoutRef.current = null;
+              if (p) runLayoutPipeline(p.state);
+            });
+            pendingLayoutRef.current = { ...pending, rafId };
+          }, TYPING_LAYOUT_DEBOUNCE_MS);
+        } else {
+          // Immediate path (paste / undo / resize / etc.): original rAF behaviour.
+          // Cancel any pending debounce — the immediate layout supersedes it.
+          if (layoutDebounceRef.current) {
+            clearTimeout(layoutDebounceRef.current);
+            layoutDebounceRef.current = null;
+          }
+          if (pendingLayoutRef.current && pendingLayoutRef.current.rafId !== -1) {
+            // rAF already pending — state was updated above, nothing more to do.
+            return;
+          }
+          const rafId = requestAnimationFrame(() => {
+            const pending = pendingLayoutRef.current;
+            pendingLayoutRef.current = null;
+            if (pending) runLayoutPipeline(pending.state);
+          });
+          pendingLayoutRef.current = { rafId, state };
+        }
       },
       [runLayoutPipeline]
     );
 
-    // Clean up pending rAF on unmount
+    // Clean up pending rAF and debounce timer on unmount
     useEffect(() => {
       return () => {
         if (pendingLayoutRef.current) {
-          cancelAnimationFrame(pendingLayoutRef.current.rafId);
+          if (pendingLayoutRef.current.rafId !== -1) {
+            cancelAnimationFrame(pendingLayoutRef.current.rafId);
+          }
           pendingLayoutRef.current = null;
+        }
+        if (layoutDebounceRef.current) {
+          clearTimeout(layoutDebounceRef.current);
+          layoutDebounceRef.current = null;
         }
       };
     }, []);
@@ -2421,8 +2480,16 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           // Increment state sequence to signal document changed
           syncCoordinator.incrementStateSeq();
 
-          // Content changed - schedule layout (coalesced via rAF)
-          scheduleLayout(newState);
+          // Debounce layout for single-character typing to prevent layout thrash
+          // on large documents (perf/issues.md §2).
+          // Paste, undo/redo, and multi-step programmatic edits run immediately
+          // so their result appears without perceptible delay.
+          const isPaste = !!transaction.getMeta('paste');
+          const isHistory = !!transaction.getMeta('history$');
+          const isBulkEdit = transaction.steps.length > 1;
+          const shouldDebounce = !isPaste && !isHistory && !isBulkEdit;
+
+          scheduleLayout(newState, shouldDebounce);
 
           // Notify document change - use ref to avoid infinite loops
           const newDoc = hiddenPMRef.current?.getDocument();
@@ -4006,139 +4073,176 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           onKeyDown={handlePMKeyDown}
         />
 
-        {/* Viewport for visible pages */}
+        {/*
+         * Layout unit — wraps the page viewport + sidebar overlay together.
+         *
+         * When the sidebar is open we give this div a real CSS min-width equal
+         * to (pageWidth×zoom + SIDEBAR_WIDTH + SIDEBAR_PAGE_GAP).  That makes
+         * the scroll container's scroll area wider than its visible area, so the
+         * browser creates a real horizontal scrollbar that lets the user pan
+         * between the page and the sidebar cards.
+         *
+         * Crucially this avoids the old translateX(-176px) approach which used
+         * a CSS transform — transforms are visual-only and do NOT expand the
+         * scroll area, so the page's left margin was simply clipped with no way
+         * to scroll back to it.
+         *
+         * With the wrapper approach the sidebar's absolute `left: calc(50% − 176px …)`
+         * formula works correctly because 50 % is now relative to the wrapper
+         * width (P + 352 px), and the algebra resolves to the sidebar sitting
+         * exactly 12 px to the right of the page's right edge.
+         */}
         <div
           style={{
-            ...viewportStyles,
-            minHeight: totalHeight,
-            // Negative margin at zoom<1 shrinks scroll area to match visual height;
-            // positive margin at zoom>1 grows it so content isn't clipped.
-            marginBottom: zoom !== 1 ? totalHeight * (zoom - 1) : undefined,
-            transform: (() => {
-              const parts: string[] = [];
-              if (commentsSidebarOpen) {
-                // Center page + sidebar as a unit within the container
-                parts.push(`translateX(-${SIDEBAR_DOCUMENT_SHIFT}px)`);
-              }
-              if (zoom !== 1) parts.push(`scale(${zoom})`);
-              return parts.length > 0 ? parts.join(' ') : undefined;
-            })(),
-            transformOrigin: 'top center',
-            transition: 'transform 0.2s ease',
+            position: 'relative',
+            // flex-row ONLY when sidebar is open.  When closed the viewport
+            // stays block-level and fills the container, keeping the page
+            // centred as normal.
+            // When open, flex-row makes the viewport use its natural content
+            // width (pageSize.w) so the page remains centred in the VISIBLE
+            // area rather than in the wider wrapper.
+            display: commentsSidebarOpen ? 'flex' : undefined,
+            flexDirection: commentsSidebarOpen ? 'row' : undefined,
+            // min-width = page_visual_right + SIDEBAR_PAGE_GAP + SIDEBAR_WIDTH
+            //           = pageSize.w*(1+zoom)/2 + 12 + 340
+            // Matches the sidebar formula exactly so sidebar_right = wrapper_right.
+            minWidth: commentsSidebarOpen
+              ? `${(pageSize.w * (1 + zoom)) / 2 + SIDEBAR_PAGE_GAP + (sidebarWidthProp ?? SIDEBAR_WIDTH)}px`
+              : undefined,
+            backgroundColor: 'var(--doc-bg, #f8f9fa)',
           }}
         >
-          {/* Pages container */}
-          <div
-            ref={pagesContainerRef}
-            className={`paged-editor__pages${readOnly ? ' paged-editor--readonly' : ''}${hfEditMode ? ` paged-editor--hf-editing paged-editor--editing-${hfEditMode}` : ''}`}
-            style={pagesContainerStyles}
-            onMouseDown={handlePagesMouseDown}
-            onMouseMove={handlePagesMouseMove}
-            onClick={handlePagesClick}
-            onContextMenu={handlePagesContextMenu}
-            aria-hidden="true" // Visual only, PM provides semantic content
-          />
-
-          {/* Selection overlay */}
-          <SelectionOverlay
-            selectionRects={selectionRects}
-            caretPosition={caretPosition}
-            isFocused={isFocused}
-            pageGap={pageGap}
-            readOnly={readOnly}
-          />
-
-          {/* Image selection overlay */}
-          <ImageSelectionOverlay
-            imageInfo={selectedImageInfo}
-            zoom={zoom}
-            isFocused={isFocused}
-            onResize={handleImageResize}
-            onResizeStart={handleImageResizeStart}
-            onResizeEnd={handleImageResizeEnd}
-            onDragMove={handleImageDragMove}
-            onDragStart={handleImageDragStart}
-            onDragEnd={handleImageDragEnd}
-          />
-
-          {/* Table quick action insert button */}
-          {tableInsertButton && (
-            <button
-              type="button"
-              onMouseDown={handleTableInsertClick}
-              onMouseEnter={clearTableInsertTimer}
-              onMouseLeave={() => setTableInsertButton(null)}
-              style={{
-                position: 'absolute',
-                left: tableInsertButton.x,
-                top: tableInsertButton.y,
-                width: 20,
-                height: 20,
-                borderRadius: '4px',
-                border: '1px solid #dadce0',
-                backgroundColor: '#f8f9fa',
-                color: '#5f6368',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                zIndex: 200,
-                padding: 0,
-                boxShadow: 'none',
-              }}
-              title={
-                tableInsertButton.type === 'row' ? 'Insert row below' : 'Insert column to the right'
-              }
-              aria-label={
-                tableInsertButton.type === 'row' ? 'Insert row below' : 'Insert column to the right'
-              }
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path
-                  d="M6 1v10M1 6h10"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
-          )}
-
-          {/* Plugin overlays (highlights, annotations) */}
-          {pluginOverlays && (
-            <div className="paged-editor__plugin-overlays" style={pluginOverlaysStyles}>
-              {pluginOverlays}
-            </div>
-          )}
-
-          {/* Generic PM decoration forwarder — surfaces yCursorPlugin remote
-              cursors, search-highlight plugins, etc. on the visible pages.
-              No-op when no plugin emits decorations. */}
-          <DecorationLayer
-            getView={() => hiddenPMRef.current?.getView() ?? null}
-            getPagesContainer={() => pagesContainerRef.current}
-            zoom={zoom}
-            transactionVersion={transactionVersion}
-            syncCoordinator={syncCoordinator}
-          />
-        </div>
-
-        {/* Sidebar overlay — positioned to match visual document height, visible overflow for sidebar items */}
-        {sidebarOverlay && (
+          {/* Viewport for visible pages */}
           <div
             style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              height: totalHeight * zoom,
-              pointerEvents: 'none',
-              overflow: 'visible',
+              ...viewportStyles,
+              minHeight: totalHeight,
+              // Negative margin at zoom<1 shrinks scroll area to match visual height;
+              // positive margin at zoom>1 grows it so content isn't clipped.
+              marginBottom: zoom !== 1 ? totalHeight * (zoom - 1) : undefined,
+              transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+              transformOrigin: 'top center',
+              transition: 'transform 0.2s ease',
             }}
           >
-            <div style={{ pointerEvents: 'auto' }}>{sidebarOverlay}</div>
+            {/* Pages container */}
+            <div
+              ref={pagesContainerRef}
+              className={`paged-editor__pages${readOnly ? ' paged-editor--readonly' : ''}${hfEditMode ? ` paged-editor--hf-editing paged-editor--editing-${hfEditMode}` : ''}`}
+              style={pagesContainerStyles}
+              onMouseDown={handlePagesMouseDown}
+              onMouseMove={handlePagesMouseMove}
+              onClick={handlePagesClick}
+              onContextMenu={handlePagesContextMenu}
+              aria-hidden="true" // Visual only, PM provides semantic content
+            />
+
+            {/* Selection overlay */}
+            <SelectionOverlay
+              selectionRects={selectionRects}
+              caretPosition={caretPosition}
+              isFocused={isFocused}
+              pageGap={pageGap}
+              readOnly={readOnly}
+            />
+
+            {/* Image selection overlay */}
+            <ImageSelectionOverlay
+              imageInfo={selectedImageInfo}
+              zoom={zoom}
+              isFocused={isFocused}
+              onResize={handleImageResize}
+              onResizeStart={handleImageResizeStart}
+              onResizeEnd={handleImageResizeEnd}
+              onDragMove={handleImageDragMove}
+              onDragStart={handleImageDragStart}
+              onDragEnd={handleImageDragEnd}
+            />
+
+            {/* Table quick action insert button */}
+            {tableInsertButton && (
+              <button
+                type="button"
+                onMouseDown={handleTableInsertClick}
+                onMouseEnter={clearTableInsertTimer}
+                onMouseLeave={() => setTableInsertButton(null)}
+                style={{
+                  position: 'absolute',
+                  left: tableInsertButton.x,
+                  top: tableInsertButton.y,
+                  width: 20,
+                  height: 20,
+                  borderRadius: '4px',
+                  border: '1px solid #dadce0',
+                  backgroundColor: '#f8f9fa',
+                  color: '#5f6368',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  zIndex: 200,
+                  padding: 0,
+                  boxShadow: 'none',
+                }}
+                title={
+                  tableInsertButton.type === 'row'
+                    ? 'Insert row below'
+                    : 'Insert column to the right'
+                }
+                aria-label={
+                  tableInsertButton.type === 'row'
+                    ? 'Insert row below'
+                    : 'Insert column to the right'
+                }
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path
+                    d="M6 1v10M1 6h10"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            )}
+
+            {/* Plugin overlays (highlights, annotations) */}
+            {pluginOverlays && (
+              <div className="paged-editor__plugin-overlays" style={pluginOverlaysStyles}>
+                {pluginOverlays}
+              </div>
+            )}
+
+            {/* Generic PM decoration forwarder — surfaces yCursorPlugin remote
+              cursors, search-highlight plugins, etc. on the visible pages.
+              No-op when no plugin emits decorations. */}
+            <DecorationLayer
+              getView={() => hiddenPMRef.current?.getView() ?? null}
+              getPagesContainer={() => pagesContainerRef.current}
+              zoom={zoom}
+              transactionVersion={transactionVersion}
+              syncCoordinator={syncCoordinator}
+            />
           </div>
-        )}
+
+          {/* Sidebar overlay — positioned to match visual document height, visible overflow for sidebar items */}
+          {sidebarOverlay && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                height: totalHeight * zoom,
+                pointerEvents: 'none',
+                overflow: 'visible',
+              }}
+            >
+              <div style={{ pointerEvents: 'auto' }}>{sidebarOverlay}</div>
+            </div>
+          )}
+        </div>
+        {/* end layout unit */}
       </div>
     );
   }

@@ -7,7 +7,7 @@
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import type { ReactSidebarItem, RenderedDomContext } from '../plugin-api/types';
-import { SIDEBAR_WIDTH, SIDEBAR_PAGE_GAP, SIDEBAR_DOCUMENT_SHIFT } from './sidebar/constants';
+import { SIDEBAR_WIDTH, SIDEBAR_PAGE_GAP } from './sidebar/constants';
 import { resolveItemPositions } from './sidebar/resolveItemPositions';
 import { useTranslation } from '../i18n';
 
@@ -23,6 +23,11 @@ export interface UnifiedSidebarProps {
   onExpandedItemChange?: (itemId: string | null) => void;
   /** Controlled: sidebar item to expand based on cursor position. */
   activeItemId?: string | null;
+  /**
+   * Aside column width in px.  Defaults to SIDEBAR_WIDTH (340).
+   * Pass a zoom-scaled value so the column shrinks with the document.
+   */
+  sidebarWidth?: number;
 }
 
 export function UnifiedSidebar({
@@ -34,7 +39,9 @@ export function UnifiedSidebar({
   editorContainerRef,
   onExpandedItemChange,
   activeItemId,
+  sidebarWidth: sidebarWidthProp,
 }: UnifiedSidebarProps) {
+  const sidebarWidth = sidebarWidthProp ?? SIDEBAR_WIDTH;
   const { t } = useTranslation();
   // Fully controlled: parent owns expansion state via activeItemId
   const expandedItem = activeItemId ?? null;
@@ -181,8 +188,28 @@ export function UnifiedSidebar({
       style={{
         position: 'absolute',
         top: 0,
-        left: `calc(50% - ${SIDEBAR_DOCUMENT_SHIFT}px + ${(pageWidth * zoom) / 2 + SIDEBAR_PAGE_GAP}px)`,
-        width: SIDEBAR_WIDTH,
+        // With the wrapper layout (no translateX on the viewport) the sidebar
+        // sits in a div whose min-width = pageWidth*zoom + SIDEBAR_WIDTH +
+        // SIDEBAR_PAGE_GAP.  "50%" therefore equals (pageWidth*zoom + 352)/2.
+        // Adding pageWidth*zoom/2 + 12 places the sidebar's left edge exactly
+        // SIDEBAR_PAGE_GAP (12 px) to the right of the page's right edge.
+        // The old "- SIDEBAR_DOCUMENT_SHIFT" offset was only needed to
+        // compensate for the translateX(-176px) that used to be on the
+        // viewport — without that transform the subtraction is wrong.
+        // Pure pixel formula — no 50% reference needed.
+        //
+        // Because the viewport is flex-row, it starts at x=0 and has its
+        // natural CSS width (pageWidth).  The scale(zoom) transform has
+        // transformOrigin=“top center” = (pageWidth/2, 0), so the page’s
+        // visual right edge is exactly:
+        //
+        //   page_visual_right = pageWidth/2 + pageWidth/2 * zoom
+        //                     = pageWidth * (1 + zoom) / 2
+        //
+        // This is exact for any zoom value and eliminates the correction
+        // constant that previously varied with zoom.
+        left: `${(pageWidth * (1 + zoom)) / 2 + SIDEBAR_PAGE_GAP}px`,
+        width: sidebarWidth,
         fontFamily: "'Google Sans', Roboto, Arial, sans-serif",
         zIndex: 40,
         backgroundColor: 'transparent',
@@ -228,6 +255,7 @@ export function UnifiedSidebar({
                 isExpanded,
                 onToggleExpand: () => toggleExpand(item.id),
                 measureRef: getMeasureRef(item.id),
+                zoom,
               })}
             </div>
           );

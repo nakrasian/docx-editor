@@ -416,7 +416,7 @@ export function ImagePositionDialog({
               ...btnStyle,
               backgroundColor: 'var(--doc-primary)',
               color: 'white',
-              borderColor: 'var(--doc-primary)',
+              border: '1px solid var(--doc-primary)',
             }}
             onClick={handleApply}
           >

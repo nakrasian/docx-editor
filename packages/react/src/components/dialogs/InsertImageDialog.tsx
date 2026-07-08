@@ -130,15 +130,14 @@ const DROP_ZONE_STYLE: CSSProperties = {
 
 const DROP_ZONE_ACTIVE_STYLE: CSSProperties = {
   ...DROP_ZONE_STYLE,
-  borderColor: 'var(--doc-primary)',
+  border: '2px dashed var(--doc-primary)',
   backgroundColor: 'var(--doc-primary-light)',
 };
 
 const DROP_ZONE_WITH_IMAGE_STYLE: CSSProperties = {
   ...DROP_ZONE_STYLE,
   padding: '20px',
-  borderStyle: 'solid',
-  borderColor: 'var(--doc-primary)',
+  border: '2px solid var(--doc-primary)',
 };
 
 const PREVIEW_CONTAINER_STYLE: CSSProperties = {
@@ -221,7 +220,7 @@ const LOCK_BUTTON_STYLE: CSSProperties = {
 const LOCK_BUTTON_ACTIVE_STYLE: CSSProperties = {
   ...LOCK_BUTTON_STYLE,
   backgroundColor: 'var(--doc-primary)',
-  borderColor: 'var(--doc-primary)',
+  border: '1px solid var(--doc-primary)',
   color: 'white',
 };
 

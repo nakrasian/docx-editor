@@ -743,3 +743,15 @@ export {
   type McpToolResult,
   type McpSession,
 } from '@eigenpal/docx-core/core-plugins';
+
+// ============================================================================
+// SIDEBAR LAYOUT CONSTANTS
+// Exported so host apps can compute the zoom reservation needed when the
+// unified sidebar is visible (total = SIDEBAR_DOCUMENT_SHIFT * 2).
+// ============================================================================
+
+export {
+  SIDEBAR_WIDTH,
+  SIDEBAR_PAGE_GAP,
+  SIDEBAR_DOCUMENT_SHIFT,
+} from './components/sidebar/constants';

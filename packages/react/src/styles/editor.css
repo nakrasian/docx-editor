@@ -517,11 +517,14 @@
   cursor: text;
 }
 
-/* Header/footer areas — double-click hint */
+/* Header/footer areas — double-click hint.
+ * No CSS transition: the :hover fires on every page that scrolls under the
+ * cursor, producing 40+ transitions/second during scrolling and burning
+ * the entire frame budget (perf/issues.md §1). Instant color change is
+ * perceptually equivalent since hover intent is never in doubt here. */
 .layout-page-header,
 .layout-page-footer {
   cursor: pointer;
-  transition: background-color 0.15s ease;
 }
 
 .layout-page-header:hover,

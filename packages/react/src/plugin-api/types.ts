@@ -44,6 +44,11 @@ export interface SidebarItemRenderProps {
   onToggleExpand: () => void;
   /** Ref callback to measure the rendered card height. */
   measureRef: (el: HTMLDivElement | null) => void;
+  /**
+   * Current document zoom level (0–1+).  Cards can use this to scale their
+   * content so they appear the same visual size as the surrounding text.
+   */
+  zoom: number;
 }
 
 /**

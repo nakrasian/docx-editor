@@ -33,6 +33,7 @@ import JSZip from 'jszip';
 import type { Document } from '../types/document';
 import type { BlockContent, HeaderFooter, Image, Hyperlink } from '../types/content';
 import { serializeDocument } from './serializer/documentSerializer';
+import { serializeStyles } from './serializer/styleSerializer';
 import { serializeHeaderFooter } from './serializer/headerFooterSerializer';
 import {
   serializeCommentsWithInfo,
@@ -477,6 +478,17 @@ export async function repackDocx(doc: Document, options: RepackOptions = {}): Pr
     compression: 'DEFLATE',
     compressionOptions: { level: compressionLevel },
   });
+
+  // Serialize and update styles.xml (preserve custom styles from document model)
+  if (exportDocument.package.styles) {
+    const stylesXml = serializeStyles(exportDocument.package.styles);
+    if (stylesXml) {
+      newZip.file('word/styles.xml', stylesXml, {
+        compression: 'DEFLATE',
+        compressionOptions: { level: compressionLevel },
+      });
+    }
+  }
 
   // Serialize and update modified headers/footers
   serializeHeadersFootersToZip(exportDocument, newZip, compressionLevel);
@@ -1202,7 +1214,7 @@ export async function createEmptyDocx(): Promise<ArrayBuffer> {
 </w:document>`
   );
 
-  // Minimal styles
+  // Default styles (matches createDocument.ts defaults)
   zip.file(
     'word/styles.xml',
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1210,7 +1222,7 @@ export async function createEmptyDocx(): Promise<ArrayBuffer> {
   <w:docDefaults>
     <w:rPrDefault>
       <w:rPr>
-        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
         <w:sz w:val="22"/>
       </w:rPr>
     </w:rPrDefault>
@@ -1222,6 +1234,135 @@ export async function createEmptyDocx(): Promise<ArrayBuffer> {
   </w:docDefaults>
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>
+    <w:qFormat/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:sz w:val="22"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:line="276" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Title">
+    <w:name w:val="Title"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="10"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:sz w:val="52"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Subtitle">
+    <w:name w:val="Subtitle"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="11"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:sz w:val="30"/>
+      <w:color w:val="666666"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="Heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="9"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:sz w:val="40"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:before="400" w:after="120" w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="Heading 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="9"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:sz w:val="32"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:before="360" w:after="80" w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading3">
+    <w:name w:val="Heading 3"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="9"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:sz w:val="28"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:before="320" w:after="80" w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading4">
+    <w:name w:val="Heading 4"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="9"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:sz w:val="24"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:before="280" w:after="80" w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading5">
+    <w:name w:val="Heading 5"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="9"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:sz w:val="22"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:before="240" w:after="80" w:line="240" w:lineRule="auto"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading6">
+    <w:name w:val="Heading 6"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:qFormat/>
+    <w:uiPriority w:val="9"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>
+      <w:b/>
+      <w:i/>
+      <w:sz w:val="22"/>
+    </w:rPr>
+    <w:pPr>
+      <w:spacing w:before="200" w:after="80" w:line="240" w:lineRule="auto"/>
+    </w:pPr>
   </w:style>
 </w:styles>`
   );

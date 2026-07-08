@@ -39,7 +39,7 @@ import {
 import { EditorToolbar } from './EditorToolbar';
 import { pointsToHalfPoints } from './ui/FontSizePicker';
 import { DocumentOutline } from './DocumentOutline';
-import { SIDEBAR_DOCUMENT_SHIFT } from './sidebar/constants';
+import { SIDEBAR_WIDTH, SIDEBAR_PAGE_GAP } from './sidebar/constants';
 import { UnifiedSidebar } from './UnifiedSidebar';
 import { CommentMarginMarkers } from './CommentMarginMarkers';
 import { useCommentSidebarItems, type CommentCallbacks } from '../hooks/useCommentSidebarItems';
@@ -159,6 +159,7 @@ import {
   decreaseListLevel,
   clearFormatting,
   applyStyle,
+  getStyleId,
   createStyleResolver,
   // Hyperlink commands
   getHyperlinkAttrs,
@@ -3032,6 +3033,40 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
         }
       }
 
+      // Heading shortcuts: Cmd+Opt+1..6 (Mac) / Ctrl+Alt+1..6 (Win) → Heading 1..6
+      // Cmd+Opt+0 / Ctrl+Alt+0 → Normal text
+      // Use e.code (physical key) because Option/Alt changes e.key to special chars on Mac.
+      if (cmdOrCtrl && e.altKey && !e.shiftKey && e.code.startsWith('Digit')) {
+        const keyNum = parseInt(e.code.slice(5), 10);
+        if (keyNum >= 0 && keyNum <= 6) {
+          e.preventDefault();
+          const styleId = keyNum === 0 ? 'Normal' : `Heading${keyNum}`;
+          const view = pagedEditorRef.current?.getView();
+          if (view) {
+            const currentDoc = historyStateRef.current;
+            const styleResolver = currentDoc?.package.styles
+              ? getCachedStyleResolver(currentDoc.package.styles)
+              : null;
+
+            // Toggle: if already heading N, switch to Normal; otherwise apply heading N
+            const currentStyleId = getStyleId(view.state);
+            if (currentStyleId === styleId) {
+              // Toggle back to Normal
+              applyStyle('Normal')(view.state, view.dispatch);
+            } else if (styleResolver) {
+              const resolved = styleResolver.resolveParagraphStyle(styleId);
+              applyStyle(styleId, {
+                paragraphFormatting: resolved.paragraphFormatting,
+                runFormatting: resolved.runFormatting,
+              })(view.state, view.dispatch);
+            } else {
+              applyStyle(styleId)(view.state, view.dispatch);
+            }
+            view.focus();
+          }
+        }
+      }
+
       if (cmdOrCtrl && !e.shiftKey && !e.altKey) {
         if (e.key.toLowerCase() === 'f') {
           e.preventDefault();
@@ -3747,6 +3782,13 @@ body { background: white; }
   }, [trackedChanges]);
 
   const sidebarOpen = allSidebarItems.length > 0;
+  // Scale sidebar column width with the current zoom so it stays proportional
+  // to the document.  Bounded to [160, SIDEBAR_WIDTH] so it never grows
+  // beyond the standard size or collapses too small to read.
+  const sidebarWidth = Math.min(
+    SIDEBAR_WIDTH,
+    Math.max(160, Math.round(SIDEBAR_WIDTH * state.zoom))
+  );
 
   const resolvedCommentIds = useMemo(() => {
     const ids = new Set<number>();
@@ -3928,7 +3970,7 @@ body { background: white; }
                         className="flex justify-center px-5 py-1 overflow-x-auto flex-shrink-0 bg-doc-bg"
                         style={{
                           paddingRight: sidebarOpen
-                            ? `calc(20px + ${SIDEBAR_DOCUMENT_SHIFT * 2}px)`
+                            ? `calc(20px + ${SIDEBAR_WIDTH + SIDEBAR_PAGE_GAP}px)`
                             : undefined,
                           transition: 'padding 0.2s ease',
                         }}
@@ -4118,6 +4160,7 @@ body { background: white; }
                         onHyperlinkClick={handleHyperlinkClick}
                         onContextMenu={handleContextMenu}
                         commentsSidebarOpen={sidebarOpen}
+                        sidebarWidth={sidebarWidth}
                         onAnchorPositionsChange={setAnchorPositions}
                         resolvedCommentIds={resolvedIdsForRender}
                         scrollContainerRef={scrollContainerRef}
@@ -4134,6 +4177,7 @@ body { background: white; }
                                   return sp?.pageWidth ? Math.round(sp.pageWidth / 15) : 816;
                                 })()}
                                 zoom={state.zoom}
+                                sidebarWidth={sidebarWidth}
                                 editorContainerRef={scrollContainerRef}
                                 onExpandedItemChange={setExpandedSidebarItem}
                                 activeItemId={expandedSidebarItem}

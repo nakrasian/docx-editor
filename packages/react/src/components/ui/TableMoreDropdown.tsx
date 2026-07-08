@@ -271,10 +271,11 @@ export function TableMoreDropdown({
                     justifyContent: 'center',
                     width: 32,
                     height: 28,
-                    border: '1px solid var(--doc-border)',
+                    border: isActive
+                      ? '1px solid var(--doc-primary)'
+                      : '1px solid var(--doc-border)',
                     borderRadius: 4,
                     backgroundColor: isActive ? 'var(--doc-primary-light)' : 'transparent',
-                    borderColor: isActive ? 'var(--doc-primary)' : 'var(--doc-border)',
                     color: isActive ? 'var(--doc-primary)' : 'var(--doc-text)',
                     cursor: 'pointer',
                   }}

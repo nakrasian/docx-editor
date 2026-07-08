@@ -151,7 +151,7 @@ const INPUT_STYLE: CSSProperties = {
 
 const INPUT_ERROR_STYLE: CSSProperties = {
   ...INPUT_STYLE,
-  borderColor: 'var(--doc-error)',
+  border: '1px solid var(--doc-error)',
 };
 
 const SELECT_STYLE: CSSProperties = {

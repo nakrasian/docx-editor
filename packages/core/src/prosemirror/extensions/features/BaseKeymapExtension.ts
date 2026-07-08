@@ -72,6 +72,23 @@ const clearIndentOnBackspace: Command = (state, dispatch) => {
 };
 
 /**
+ * Style IDs that should reset to Normal on Enter.
+ * Matches Google Docs behavior: headings, title, subtitle all
+ * produce a Normal paragraph after Enter (via OOXML w:next).
+ */
+const RESET_ON_ENTER_STYLES = new Set([
+  'Heading1',
+  'Heading2',
+  'Heading3',
+  'Heading4',
+  'Heading5',
+  'Heading6',
+  'Title',
+  'Subtitle',
+  'TOCHeading',
+]);
+
+/**
  * Custom Enter handler: splits the block, inherits style-related attrs,
  * clears paragraph borders, and preserves font marks on the new paragraph.
  *
@@ -144,6 +161,25 @@ const splitBlockClearBorders: Command = (state, dispatch, view) => {
         attrsChanged = true;
       }
 
+      // Reset styleId to Normal for heading/title/subtitle styles on Enter.
+      // Google Docs + Word both reset to Normal paragraph after heading Enter.
+      const inheritedStyleId = newAttrs.styleId as string | undefined;
+      let didResetStyle = false;
+      if (inheritedStyleId && RESET_ON_ENTER_STYLES.has(inheritedStyleId)) {
+        newAttrs.styleId = null;
+        // Clear paragraph formatting inherited from the heading style:
+        // spacing, line height, and defaultTextFormatting (which carries
+        // the heading's font size into stored marks on the new empty paragraph).
+        newAttrs.spaceBefore = null;
+        newAttrs.spaceAfter = null;
+        newAttrs.lineSpacing = null;
+        newAttrs.lineSpacingRule = null;
+        newAttrs.contextualSpacing = null;
+        newAttrs.defaultTextFormatting = null;
+        attrsChanged = true;
+        didResetStyle = true;
+      }
+
       if (attrsChanged) {
         tr.setNodeMarkup($from.before(), undefined, newAttrs);
       }
@@ -156,9 +192,12 @@ const splitBlockClearBorders: Command = (state, dispatch, view) => {
         // applied a font override), use those. When text inherits formatting from
         // the paragraph style chain (no explicit marks), derive marks from the
         // source paragraph's defaultTextFormatting.
-        let effectiveMarks: Mark[] = styleMarks;
+        //
+        // When the style was reset (heading → Normal), discard marks inherited
+        // from the heading style so the Normal style cascade handles font/size.
+        let effectiveMarks: Mark[] = didResetStyle ? [] : styleMarks;
 
-        if (effectiveMarks.length === 0 && sourcePara) {
+        if (effectiveMarks.length === 0 && sourcePara && !didResetStyle) {
           const dtf = sourcePara.attrs.defaultTextFormatting as TextFormatting | undefined;
           if (dtf) {
             const allMarks = textFormattingToMarks(dtf, state.schema);

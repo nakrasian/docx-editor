@@ -663,7 +663,7 @@ function TableAlignmentRow({
         style={{
           ...alignmentButtonStyles,
           backgroundColor: isActive ? 'var(--doc-primary-light)' : 'transparent',
-          borderColor: isActive ? 'var(--doc-primary)' : 'var(--doc-border)',
+          border: isActive ? '1px solid var(--doc-primary)' : '1px solid var(--doc-border)',
           color: isActive ? 'var(--doc-primary)' : 'var(--doc-text)',
         }}
         onClick={() => onAction({ type: 'tableProperties', props: { justification: value } })}

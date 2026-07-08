@@ -225,14 +225,13 @@ const GRID_CELL_STYLE: CSSProperties = {
 const GRID_CELL_HOVER_STYLE: CSSProperties = {
   ...GRID_CELL_STYLE,
   transform: 'scale(1.1)',
-  borderColor: '#333',
+  border: '1px solid #333',
   zIndex: 1,
 };
 
 const GRID_CELL_SELECTED_STYLE: CSSProperties = {
   ...GRID_CELL_STYLE,
-  borderWidth: '2px',
-  borderColor: '#0066cc',
+  border: '2px solid #0066cc',
   boxShadow: '0 0 0 1px #0066cc',
 };
 

@@ -32,6 +32,8 @@ export interface StyleOption {
   italic?: boolean;
   /** Text color (RGB hex) */
   color?: string;
+  /** Keyboard shortcut hint (e.g., "⌘⌥1") */
+  shortcut?: string;
 }
 
 export interface StylePickerProps {
@@ -43,6 +45,26 @@ export interface StylePickerProps {
   className?: string;
   width?: number | string;
 }
+
+// ============================================================================
+// KEYBOARD SHORTCUTS (display hints only — actual bindings in DocxEditor)
+// ============================================================================
+
+const isMac =
+  typeof navigator !== 'undefined' ? navigator.platform.toUpperCase().indexOf('MAC') >= 0 : false;
+
+const modKey = isMac ? '⌘' : 'Ctrl';
+const optKey = isMac ? '⌥' : 'Alt';
+
+const STYLE_SHORTCUTS: Record<string, string> = {
+  Normal: `${modKey}${optKey}0`,
+  Heading1: `${modKey}${optKey}1`,
+  Heading2: `${modKey}${optKey}2`,
+  Heading3: `${modKey}${optKey}3`,
+  Heading4: `${modKey}${optKey}4`,
+  Heading5: `${modKey}${optKey}5`,
+  Heading6: `${modKey}${optKey}6`,
+};
 
 // ============================================================================
 // DEFAULT STYLES (matching Google Docs order and appearance)
@@ -58,6 +80,7 @@ const DEFAULT_STYLES: StyleOption[] = [
     priority: 0,
     qFormat: true,
     fontSize: 22, // 11pt
+    shortcut: STYLE_SHORTCUTS.Normal,
   },
   {
     styleId: 'Title',
@@ -88,6 +111,7 @@ const DEFAULT_STYLES: StyleOption[] = [
     qFormat: true,
     fontSize: 40, // 20pt
     bold: true,
+    shortcut: STYLE_SHORTCUTS.Heading1,
   },
   {
     styleId: 'Heading2',
@@ -98,6 +122,7 @@ const DEFAULT_STYLES: StyleOption[] = [
     qFormat: true,
     fontSize: 32, // 16pt
     bold: true,
+    shortcut: STYLE_SHORTCUTS.Heading2,
   },
   {
     styleId: 'Heading3',
@@ -108,6 +133,41 @@ const DEFAULT_STYLES: StyleOption[] = [
     qFormat: true,
     fontSize: 28, // 14pt
     bold: true,
+    shortcut: STYLE_SHORTCUTS.Heading3,
+  },
+  {
+    styleId: 'Heading4',
+    name: 'Heading 4',
+    nameKey: 'styles.heading4',
+    type: 'paragraph',
+    priority: 6,
+    qFormat: true,
+    fontSize: 24, // 12pt
+    bold: true,
+    shortcut: STYLE_SHORTCUTS.Heading4,
+  },
+  {
+    styleId: 'Heading5',
+    name: 'Heading 5',
+    nameKey: 'styles.heading5',
+    type: 'paragraph',
+    priority: 7,
+    qFormat: true,
+    fontSize: 22, // 11pt
+    bold: true,
+    shortcut: STYLE_SHORTCUTS.Heading5,
+  },
+  {
+    styleId: 'Heading6',
+    name: 'Heading 6',
+    nameKey: 'styles.heading6',
+    type: 'paragraph',
+    priority: 8,
+    qFormat: true,
+    fontSize: 22, // 11pt
+    bold: true,
+    italic: true,
+    shortcut: STYLE_SHORTCUTS.Heading6,
   },
 ];
 
@@ -209,6 +269,7 @@ export function StylePicker({
           bold: s.rPr?.bold ?? defaultStyle?.bold,
           italic: s.rPr?.italic ?? defaultStyle?.italic,
           color: s.rPr?.color?.rgb ?? defaultStyle?.color,
+          shortcut: defaultStyle?.shortcut,
         };
       });
 
@@ -241,7 +302,14 @@ export function StylePicker({
       <SelectContent className="min-w-[260px] max-h-[400px]">
         {styleOptions.map((style) => (
           <SelectItem key={style.styleId} value={style.styleId} className="py-2.5 px-3">
-            <span style={getStylePreviewCSS(style)}>{getStyleName(style)}</span>
+            <span className="flex items-center justify-between w-full">
+              <span style={getStylePreviewCSS(style)}>{getStyleName(style)}</span>
+              {style.shortcut && (
+                <span className="text-xs text-muted-foreground ml-4 font-mono tabular-nums">
+                  {style.shortcut}
+                </span>
+              )}
+            </span>
           </SelectItem>
         ))}
       </SelectContent>

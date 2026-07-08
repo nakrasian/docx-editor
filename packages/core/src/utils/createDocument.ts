@@ -180,6 +180,53 @@ function getDefaultStyles(): Style[] {
         lineSpacing: 240,
       },
     },
+    // Heading 5 (11pt, bold)
+    {
+      styleId: 'Heading5',
+      type: 'paragraph',
+      name: 'Heading 5',
+      basedOn: 'Normal',
+      next: 'Normal',
+      qFormat: true,
+      uiPriority: 9,
+      rPr: {
+        fontSize: 22, // 11pt
+        bold: true,
+        fontFamily: {
+          ascii: 'Arial',
+          hAnsi: 'Arial',
+        },
+      },
+      pPr: {
+        spaceBefore: 240, // 12pt before
+        spaceAfter: 80, // 4pt after
+        lineSpacing: 240,
+      },
+    },
+    // Heading 6 (11pt, bold italic)
+    {
+      styleId: 'Heading6',
+      type: 'paragraph',
+      name: 'Heading 6',
+      basedOn: 'Normal',
+      next: 'Normal',
+      qFormat: true,
+      uiPriority: 9,
+      rPr: {
+        fontSize: 22, // 11pt
+        bold: true,
+        italic: true,
+        fontFamily: {
+          ascii: 'Arial',
+          hAnsi: 'Arial',
+        },
+      },
+      pPr: {
+        spaceBefore: 200, // 10pt before
+        spaceAfter: 80, // 4pt after
+        lineSpacing: 240,
+      },
+    },
   ];
 }
 

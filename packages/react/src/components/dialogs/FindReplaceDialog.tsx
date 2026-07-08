@@ -160,7 +160,7 @@ const INPUT_STYLE: CSSProperties = {
 
 const INPUT_FOCUS_STYLE: CSSProperties = {
   ...INPUT_STYLE,
-  borderColor: 'var(--doc-link)',
+  border: '1px solid var(--doc-link)',
   boxShadow: '0 0 0 2px rgba(5, 99, 193, 0.1)',
 };
 

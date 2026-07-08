@@ -140,7 +140,7 @@ const CATEGORY_TAB_STYLE: CSSProperties = {
 const CATEGORY_TAB_ACTIVE_STYLE: CSSProperties = {
   ...CATEGORY_TAB_STYLE,
   backgroundColor: 'var(--doc-primary)',
-  borderColor: 'var(--doc-primary)',
+  border: '1px solid var(--doc-primary)',
   color: 'white',
 };
 
@@ -824,7 +824,7 @@ export function InsertSymbolDialog({
                   ...(selectedSymbol === symbol
                     ? {
                         backgroundColor: 'var(--doc-primary-light)',
-                        borderColor: 'var(--doc-primary)',
+                        border: '1px solid var(--doc-primary)',
                       }
                     : {}),
                 }}
