@@ -3,9 +3,9 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { Schema } from 'prosemirror-model';
+import { Schema, Slice } from 'prosemirror-model';
 import { EditorState, TextSelection } from 'prosemirror-state';
-import { AddMarkStep, RemoveMarkStep } from 'prosemirror-transform';
+import { AddMarkStep, RemoveMarkStep, ReplaceStep } from 'prosemirror-transform';
 import {
   getChangedParagraphIds,
   hasStructuralChanges,
@@ -13,6 +13,7 @@ import {
   clearTrackedChanges,
   ParagraphChangeTrackerExtension,
 } from './ParagraphChangeTrackerExtension';
+import { ExtensionManager } from '../ExtensionManager';
 
 // Minimal schema with paraId support
 const schema = new Schema({
@@ -41,7 +42,8 @@ const schema = new Schema({
 
 // Get the plugin from the extension
 const ext = ParagraphChangeTrackerExtension();
-const runtime = ext.onSchemaReady({ schema });
+const manager = new ExtensionManager([]);
+const runtime = ext.onSchemaReady({ schema, manager });
 const plugin = runtime.plugins![0];
 
 function createDoc(...paras: Array<{ text: string; paraId?: string }>) {
@@ -106,6 +108,26 @@ describe('ParagraphChangeTrackerExtension', () => {
       state = state.apply(tr);
 
       expect(getChangedParagraphIds(state).has('P1')).toBe(true);
+    });
+
+    test('does not crash when a RemoveMarkStep is followed by a shrinking ReplaceStep', () => {
+      let state = createState([
+        { text: 'AAAA', paraId: 'P1' },
+        { text: 'BBBB', paraId: 'P2' },
+      ]);
+      const bold = schema.marks.bold.create();
+      // Mark all of paragraph 2's text (positions 7..11).
+      state = state.apply(state.tr.step(new AddMarkStep(7, 11, bold)));
+
+      // Build a single transaction with the crash-shape pair.
+      const tr = state.tr;
+      tr.step(new RemoveMarkStep(7, 11, bold));
+      tr.step(new ReplaceStep(1, 5, Slice.empty));
+      // Should not throw.
+      state = state.apply(tr);
+
+      expect(getChangedParagraphIds(state).has('P1')).toBe(true);
+      expect(getChangedParagraphIds(state).has('P2')).toBe(true);
     });
   });
 

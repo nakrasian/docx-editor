@@ -33,6 +33,9 @@ import { DEFAULT_SINGLE_LINE_RATIO } from '../../utils/fontResolver';
 // Default values - match OOXML spec defaults
 const DEFAULT_FONT_SIZE = 11; // 11pt (Word 2007+ default)
 const DEFAULT_FONT_FAMILY = 'Calibri';
+
+/** Word's "single line spacing" floor applied to `auto`/`atLeast` line rules. */
+const WORD_SINGLE_LINE_FLOOR = 1.15;
 const DEFAULT_LINE_HEIGHT_MULTIPLIER = 1.0; // OOXML spec default: single spacing (line=240)
 
 // Floating-point tolerance for line breaking (0.5px)
@@ -218,7 +221,20 @@ function calculateEmptyParagraphMetrics(
   fontFamily?: string
 ): LineTypography {
   const metrics = getFontMetrics({ fontSize, fontFamily: fontFamily ?? DEFAULT_FONT_FAMILY });
-  return calculateTypographyMetrics(fontSize, spacing, metrics);
+  const result = calculateTypographyMetrics(fontSize, spacing, metrics);
+
+  // Empty paragraphs render at single-line height even when the doc writes a
+  // smaller line value; without this floor, narrow-metric fonts (OS/2 ratio
+  // < 1.15) collapse below Word's render.
+  const lineRule = spacing?.lineRule ?? 'auto';
+  if (lineRule === 'auto' || lineRule === 'atLeast') {
+    const fontSizePx = ptToPx(fontSize);
+    const floored = Math.max(result.lineHeight, fontSizePx * WORD_SINGLE_LINE_FLOOR);
+    if (floored !== result.lineHeight) {
+      return { ...result, lineHeight: floored };
+    }
+  }
+  return result;
 }
 
 /**
@@ -260,7 +276,7 @@ function isFieldRun(run: Run): run is FieldRun {
  * Check if text run is empty (only whitespace or no text)
  */
 function isEmptyTextRun(run: TextRun): boolean {
-  return !run.text || run.text.length === 0;
+  return !run.text || run.text.replace(/\u00a0/g, ' ').trim().length === 0;
 }
 
 /**
@@ -372,6 +388,29 @@ export function measureParagraph(
 
   // Handle empty paragraph
   if (runs.length === 0) {
+    // OOXML's "trailing empty paragraph after a table" pattern (canonical
+    // for HF and body) renders as a zero-height anchor in Word. When the
+    // caller flags `suppressEmptyParagraphHeight`, return a zero-height
+    // measure so the block exists for click-to-position but doesn't
+    // inflate container height (#381).
+    if (attrs?.suppressEmptyParagraphHeight) {
+      lines.push({
+        fromRun: 0,
+        fromChar: 0,
+        toRun: 0,
+        toChar: 0,
+        width: 0,
+        ascent: 0,
+        descent: 0,
+        lineHeight: 0,
+      });
+      return {
+        kind: 'paragraph',
+        lines,
+        totalHeight: 0,
+      };
+    }
+
     const emptyFontSize = attrs?.defaultFontSize ?? DEFAULT_FONT_SIZE;
     const emptyFontFamily = attrs?.defaultFontFamily ?? DEFAULT_FONT_FAMILY;
     const emptyMetrics = calculateEmptyParagraphMetrics(emptyFontSize, spacing, emptyFontFamily);
@@ -384,10 +423,19 @@ export function measureParagraph(
       ...emptyMetrics,
     });
 
+    // Word renders spacing.before / spacing.after for empty paragraphs the
+    // same as non-empty (§17.3.1.33). The non-empty branch below adds them
+    // to totalHeight; do the same here so empty paragraphs don't collapse
+    // their authored spacing (e.g. an HF horizontal-rule paragraph with
+    // <w:spacing w:before="120">).
+    let emptyTotal = emptyMetrics.lineHeight;
+    if (spacing?.before) emptyTotal += spacing.before;
+    if (spacing?.after) emptyTotal += spacing.after;
+
     return {
       kind: 'paragraph',
       lines,
-      totalHeight: emptyMetrics.lineHeight,
+      totalHeight: emptyTotal,
     };
   }
 
@@ -407,10 +455,14 @@ export function measureParagraph(
       ...emptyMetrics,
     });
 
+    let emptyTotal = emptyMetrics.lineHeight;
+    if (spacing?.before) emptyTotal += spacing.before;
+    if (spacing?.after) emptyTotal += spacing.after;
+
     return {
       kind: 'paragraph',
       lines,
-      totalHeight: emptyMetrics.lineHeight,
+      totalHeight: emptyTotal,
     };
   }
 
@@ -439,13 +491,25 @@ export function measureParagraph(
       currentLine.maxFontMetrics
     );
 
-    // If an inline image is taller than the text-based line height,
-    // use the image height directly (it's already in pixels — no pt→px conversion needed)
+    // If an inline image is taller than the text-based line height, the line
+    // grows to fit the image PLUS the parent paragraph's natural line leading.
+    // Word treats an inline image as a tall glyph sitting on the text baseline:
+    // the image extends above the baseline (full ascent), and the line still
+    // reserves the parent font's normal descent + leading below. Without the
+    // extra leading the image renders flush with its containing cell borders
+    // (no visual breathing room when the image is alone in a table cell).
     const finalTypography = { ...typography };
     if (currentLine.maxImageHeightPx > finalTypography.lineHeight) {
-      finalTypography.lineHeight = currentLine.maxImageHeightPx;
-      finalTypography.ascent = currentLine.maxImageHeightPx * 0.8;
-      finalTypography.descent = currentLine.maxImageHeightPx * 0.2;
+      // Image-only line: line grows to image height plus the parent font's
+      // descent on BOTH sides so the row has visible breathing room above
+      // and below the image (Word's render gives a few px of cell padding
+      // even with tcMar=0). Sibling text cells share the row height, so
+      // their descenders also stay clear of overflow:hidden.
+      const imageH = currentLine.maxImageHeightPx;
+      const buffer = finalTypography.descent;
+      finalTypography.lineHeight = imageH + buffer * 2;
+      finalTypography.ascent = imageH + buffer;
+      // descent stays as text metrics
     }
 
     const line: MeasuredLine = {
@@ -743,7 +807,17 @@ export function measureParagraph(
   finalizeLine();
 
   // Calculate total height
-  const totalHeight = lines.reduce((sum, line) => sum + line.lineHeight, 0);
+  let totalHeight = lines.reduce((sum, line) => sum + line.lineHeight, 0);
+
+  // The renderer wraps a list marker in its own line element when there is no
+  // hanging indent reserved for it (matching Word's <w:suff w:val="tab"/>
+  // wrap, see renderParagraph.ts). Account for that extra row here so the
+  // paragraph reports the correct height to its container.
+  const hasOwnLineMarker =
+    !!attrs?.listMarker && !attrs?.listMarkerHidden && (indent?.hanging ?? 0) === 0;
+  if (hasOwnLineMarker && lines.length > 0) {
+    totalHeight += lines[0].lineHeight;
+  }
 
   // Add spacing before/after
   let totalWithSpacing = totalHeight;

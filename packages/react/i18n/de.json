@@ -37,9 +37,11 @@
     "symbol": "Symbol",
     "help": "Hilfe",
     "reportIssue": "Problem melden",
-    "clearFormatting": null,
-    "save": null,
-    "saveShortcut": null
+    "open": "Öffnen",
+    "openShortcut": "Strg+O",
+    "save": "Speichern",
+    "saveShortcut": "Strg+S",
+    "clearFormatting": null
   },
   "formattingBar": {
     "groups": {
@@ -682,7 +684,22 @@
     "topAndBottom": "Oben und unten",
     "behindText": "Hinter den Text",
     "inFrontOfText": "Vor den Text",
-    "tooltipPrefix": "Textumbruch: {label}"
+    "tooltipPrefix": "Textumbruch: {label}",
+    "menu": {
+      "ariaLabel": "Bildlayoutoptionen",
+      "behindText": "Hinter den Text",
+      "inFrontOfText": "Vor den Text",
+      "inLineWithText": "Mit Text in Zeile",
+      "squareLeft": "Quadrat links",
+      "squareRight": "Quadrat rechts"
+    },
+    "menuDesc": {
+      "behindText": "Bild liegt hinter dem Text",
+      "inFrontOfText": "Bild liegt über dem Text",
+      "inLineWithText": "Bild fließt als Glyphe in der Zeile",
+      "squareLeft": "Bild links, Text fließt rechts",
+      "squareRight": "Bild rechts, Text fließt links"
+    }
   },
   "responsePreview": {
     "loading": "{action}...",
@@ -758,5 +775,22 @@
   },
   "loading": {
     "label": "Wird geladen"
+  },
+  "agentPanel": {
+    "close": "Bereich schließen",
+    "composerPlaceholder": "Den Assistenten fragen…",
+    "defaultTitle": "Assistent",
+    "resizeHandle": "Assistentenbereich skalieren",
+    "send": "Senden",
+    "thinking": "Assistent denkt nach",
+    "timeline": {
+      "earlier": "+ {count, plural, one {# vorheriger Schritt} other {# vorherige Schritte}}",
+      "summary": "{count, plural, one {# Schritt} other {# Schritte}}",
+      "working": "Arbeite… {count, plural, one {# Schritt} other {# Schritte}}"
+    },
+    "toggle": "Assistent öffnen"
+  },
+  "viewer": {
+    "pageIndicator": "{current} von {total}"
   }
 }

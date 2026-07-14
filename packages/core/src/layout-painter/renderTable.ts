@@ -20,7 +20,13 @@ import type {
   ImageRun,
 } from '../layout-engine/types';
 import type { RenderContext } from './renderPage';
-import { isFloatingImageRun, emuToPixels } from './renderPage';
+import {
+  isFloatingImageRun,
+  emuToPixels,
+  floatingImageWrapsText,
+  floatingImageIsBehindDoc,
+  renderFloatingImagesLayer,
+} from './renderPage';
 import { renderParagraphFragment } from './renderParagraph';
 import { measureParagraph, type FloatingImageZone } from '../layout-bridge/measuring';
 
@@ -61,6 +67,8 @@ interface CellFloatingImage {
   distRight: number;
   /** OOXML wrapText: which side(s) TEXT flows on */
   wrapText?: 'bothSides' | 'left' | 'right' | 'largest';
+  /** Wrap type (square, tight, through, behind, inFront) */
+  wrapType?: string;
   pmStart?: number;
   pmEnd?: number;
 }
@@ -164,6 +172,7 @@ function extractCellFloatingImages(
         distLeft,
         distRight,
         wrapText,
+        wrapType: imgRun.wrapType,
         pmStart: imgRun.pmStart,
         pmEnd: imgRun.pmEnd,
       });
@@ -191,9 +200,7 @@ function renderCellContent(
   const contentEl = doc.createElement('div');
   contentEl.className = TABLE_CLASS_NAMES.cellContent;
   contentEl.style.position = 'relative';
-  // Content width must account for cell padding since the cell uses border-box sizing.
-  // Without this, content is wider than the available area, causing centering and
-  // clipping issues (especially for nested tables).
+  // Cell uses border-box sizing, so content width must subtract padding.
   const padLeft = cell.padding?.left ?? 7;
   const padRight = cell.padding?.right ?? 7;
   const contentWidth = Math.max(0, cellMeasure.width - padLeft - padRight);
@@ -205,7 +212,7 @@ function renderCellContent(
   // Build floating zones for measurement and render floating layer
   let floatingZones: FloatingImageZone[] | undefined;
   if (cellFloatingImages.length > 0) {
-    floatingZones = cellFloatingImages.map((img) => {
+    floatingZones = cellFloatingImages.filter(floatingImageWrapsText).map((img) => {
       const rectRight = img.x + img.width + img.distRight;
       const rectTop = img.y - img.distTop;
       const rectBottom = img.y + img.height + img.distBottom;
@@ -231,43 +238,21 @@ function renderCellContent(
       return { leftMargin, rightMargin, topY: rectTop, bottomY: rectBottom };
     });
 
-    // Render floating image layer within the cell
-    const floatingLayer = doc.createElement('div');
-    floatingLayer.className = 'layout-cell-floating-images-layer';
-    floatingLayer.style.position = 'absolute';
-    floatingLayer.style.top = '0';
-    floatingLayer.style.left = '0';
-    floatingLayer.style.width = '100%';
-    floatingLayer.style.height = '100%';
-    floatingLayer.style.pointerEvents = 'none';
-    floatingLayer.style.zIndex = '10';
-    floatingLayer.style.overflow = 'hidden';
-
-    for (const img of cellFloatingImages) {
-      const imgContainer = doc.createElement('div');
-      imgContainer.className = 'layout-cell-floating-image';
-      imgContainer.style.position = 'absolute';
-      imgContainer.style.left = `${img.x}px`;
-      imgContainer.style.top = `${img.y}px`;
-      imgContainer.style.pointerEvents = 'auto';
-      if (img.pmStart !== undefined) imgContainer.dataset.pmStart = String(img.pmStart);
-      if (img.pmEnd !== undefined) imgContainer.dataset.pmEnd = String(img.pmEnd);
-
-      const imgEl = doc.createElement('img');
-      imgEl.src = img.src;
-      imgEl.style.width = `${img.width}px`;
-      imgEl.style.height = `${img.height}px`;
-      imgEl.style.display = 'block';
-      if (img.alt) imgEl.alt = img.alt;
-      if (img.transform) imgEl.style.transform = img.transform;
-      imgContainer.appendChild(imgEl);
-      floatingLayer.appendChild(imgContainer);
+    const behindFloatingImages = cellFloatingImages.filter(floatingImageIsBehindDoc);
+    if (behindFloatingImages.length > 0) {
+      contentEl.appendChild(
+        renderFloatingImagesLayer(behindFloatingImages, doc, {
+          layerClass: 'layout-cell-floating-images-layer',
+          itemClass: 'layout-cell-floating-image',
+          sizing: 'fullSize',
+          layerMode: 'behind',
+        })
+      );
     }
-
-    contentEl.appendChild(floatingLayer);
   }
 
   let cumulativeY = 0;
+  let previousParagraphAfter = 0;
   for (let i = 0; i < cell.blocks.length; i++) {
     const block = cell.blocks[i];
     const measure = cellMeasure.blocks[i];
@@ -275,6 +260,10 @@ function renderCellContent(
     if (block?.kind === 'paragraph' && measure?.kind === 'paragraph') {
       const paragraphBlock = block as ParagraphBlock;
       let paragraphMeasure = measure as ParagraphMeasure;
+      const spacing = paragraphBlock.attrs?.spacing;
+      // Match body paginator: max-collapse adjacent paragraph spacing.
+      const effectiveSpaceBefore = Math.max(previousParagraphAfter, spacing?.before ?? 0);
+      cumulativeY += effectiveSpaceBefore;
 
       // Re-measure with floating zones if floating images exist in this cell
       if (floatingZones && floatingZones.length > 0) {
@@ -308,20 +297,45 @@ function renderCellContent(
       );
 
       fragEl.style.position = 'relative';
+      if (effectiveSpaceBefore > 0) {
+        fragEl.style.marginTop = `${effectiveSpaceBefore}px`;
+      }
       contentEl.appendChild(fragEl);
       cumulativeY += paragraphMeasure.totalHeight;
+      previousParagraphAfter = spacing?.after ?? 0;
     } else if (block?.kind === 'table' && measure?.kind === 'table') {
       // Nested table - render in normal document flow.
       // Avoid cumulative marginTop offsets here: cell content already flows vertically,
       // and compounding offsets can produce enormous heights on deeply nested tables.
       const tableBlock = block as TableBlock;
       const tableMeasure = measure as TableMeasure;
+      const effectiveSpaceBefore = previousParagraphAfter;
 
       const nestedTableEl = renderNestedTable(tableBlock, tableMeasure, context, doc);
       nestedTableEl.style.position = 'relative';
+      if (effectiveSpaceBefore > 0) {
+        nestedTableEl.style.marginTop = `${effectiveSpaceBefore}px`;
+      }
       contentEl.appendChild(nestedTableEl);
-      cumulativeY += (measure as TableMeasure).totalHeight ?? 0;
+      cumulativeY += effectiveSpaceBefore + ((measure as TableMeasure).totalHeight ?? 0);
+      previousParagraphAfter = 0;
     }
+  }
+
+  if (previousParagraphAfter > 0) {
+    contentEl.style.paddingBottom = `${previousParagraphAfter}px`;
+  }
+
+  const frontFloatingImages = cellFloatingImages.filter((img) => !floatingImageIsBehindDoc(img));
+  if (frontFloatingImages.length > 0) {
+    contentEl.appendChild(
+      renderFloatingImagesLayer(frontFloatingImages, doc, {
+        layerClass: 'layout-cell-floating-images-layer',
+        itemClass: 'layout-cell-floating-image',
+        sizing: 'fullSize',
+        layerMode: 'front',
+      })
+    );
   }
 
   return contentEl;
@@ -483,6 +497,14 @@ function renderTableCell(
   // Background color
   if (cell.background) {
     cellEl.style.backgroundColor = cell.background;
+  }
+
+  // `w:noWrap` (§17.4.30): forbid soft-wrapping inside the cell. We apply
+  // it on the cell box so descendants pick it up by inheritance — paragraph
+  // lines remain a single visual line that may grow the cell's effective
+  // content width past its measured size.
+  if (cell.noWrap) {
+    cellEl.style.whiteSpace = 'nowrap';
   }
 
   // Vertical alignment
@@ -690,8 +712,12 @@ export function renderTableFragment(
   const tableEl = doc.createElement('div');
   tableEl.className = TABLE_CLASS_NAMES.table;
 
-  // Basic table styling
-  tableEl.style.position = 'absolute';
+  // Outer positioning: body's per-page layout uses `absolute` (caller sets
+  // x/y via applyFragmentStyles); HF / textbox flow blocks vertically and
+  // pass `positioning: 'flow'` so the table participates in normal document
+  // flow instead. Pre-PR (#379) those callers had to overwrite the inline
+  // style after the renderer call.
+  tableEl.style.position = context.positioning === 'flow' ? 'relative' : 'absolute';
   tableEl.style.width = `${fragment.width}px`;
   tableEl.style.height = `${fragment.height}px`;
   tableEl.style.overflow = 'hidden';

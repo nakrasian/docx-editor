@@ -224,6 +224,11 @@ export type ParagraphAlignment =
 /**
  * Complete paragraph formatting properties (w:pPr)
  */
+/** Per-side flags identifying which `<w:spacing>` attrs were inline (not
+ *  inherited from a style chain). Used to suppress style-only spacing on
+ *  empty paragraphs per Word's behavior. */
+export type SpacingExplicit = { before?: boolean; after?: boolean };
+
 export interface ParagraphFormatting {
   // Alignment
   /** Paragraph alignment (w:jc) */
@@ -244,6 +249,12 @@ export interface ParagraphFormatting {
   beforeAutospacing?: boolean;
   /** Auto space after (w:spacing/@w:afterAutospacing) */
   afterAutospacing?: boolean;
+  /**
+   * Per-side flags marking which `<w:spacing>` attrs came from this
+   * paragraph's own pPr (vs inherited). Word collapses style-inherited
+   * spacing on empty paragraphs but honors the explicit values.
+   */
+  spacingExplicit?: SpacingExplicit;
 
   // Indentation
   /** Left indent in twips (w:ind/@w:left) */

@@ -19,6 +19,7 @@ import React, {
   useState,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   forwardRef,
   useImperativeHandle,
@@ -37,39 +38,40 @@ import { ImageSelectionOverlay, type ImageSelectionInfo } from './ImageSelection
 import { DecorationLayer } from './DecorationLayer';
 
 // Layout engine
-import { layoutDocument } from '@eigenpal/docx-core/layout-engine';
-import type { ColumnLayout } from '@eigenpal/docx-core/layout-engine';
+import {
+  layoutDocument,
+  findPageIndexContainingPmPos,
+  collectSectionConfigs,
+} from '@eigenpal/docx-core/layout-engine';
+import type { ColumnLayout, SectionLayoutConfig } from '@eigenpal/docx-core/layout-engine';
 import type {
   Layout,
   FlowBlock,
   Measure,
   ParagraphBlock,
+  ParagraphMeasure,
+  TableCell,
   TableBlock,
   TableMeasure,
   ImageBlock,
   ImageRun,
   PageMargins,
-  Run,
-  RunFormatting,
-  ParagraphAttrs,
-  ParagraphBorders,
-  ParagraphSpacing,
-  TextBoxBlock,
   SectionBreakBlock,
-} from '@eigenpal/docx-core/layout-engine/types';
-import {
-  DEFAULT_TEXTBOX_MARGINS,
-  DEFAULT_TEXTBOX_WIDTH,
-} from '@eigenpal/docx-core/layout-engine/types';
+  TextBoxBlock,
+} from '@eigenpal/docx-core/layout-engine';
+import { DEFAULT_TEXTBOX_MARGINS, DEFAULT_TEXTBOX_WIDTH } from '@eigenpal/docx-core/layout-engine';
 
 // Table commands (for quick-action insert buttons)
-import { addRowBelow, addColumnRight } from '@eigenpal/docx-core/prosemirror';
+import {
+  addRowBelow,
+  addColumnRight,
+  findStartPosForParaId,
+} from '@eigenpal/docx-core/prosemirror';
 
 // Layout bridge
-import {
-  toFlowBlocks,
-  convertBorderSpecToLayout,
-} from '@eigenpal/docx-core/layout-bridge/toFlowBlocks';
+import { toFlowBlocks } from '@eigenpal/docx-core/layout-bridge';
+import type { WrapType } from '@eigenpal/docx-core/docx/wrapTypes';
+import { hitTestImage, captureInlinePositionEmu } from '@eigenpal/docx-core/layout-painter';
 import {
   measureParagraph,
   resetCanvasContext,
@@ -77,30 +79,38 @@ import {
   getCachedParagraphMeasure,
   setCachedParagraphMeasure,
   type FloatingImageZone,
-} from '@eigenpal/docx-core/layout-bridge/measuring';
+  resolveTableWidthPx,
+  countTableColumns,
+  normalizeTableColumnWidths,
+} from '@eigenpal/docx-core/layout-bridge';
+import { hitTestFragment, hitTestTableCell, getPageTop } from '@eigenpal/docx-core/layout-bridge';
+import { clickToPosition } from '@eigenpal/docx-core/layout-bridge';
+import { clickToPositionDom } from '@eigenpal/docx-core/layout-bridge';
 import {
-  hitTestFragment,
-  hitTestTableCell,
-  getPageTop,
-} from '@eigenpal/docx-core/layout-bridge/hitTest';
-import { clickToPosition } from '@eigenpal/docx-core/layout-bridge/clickToPosition';
-import { clickToPositionDom } from '@eigenpal/docx-core/layout-bridge/clickToPositionDom';
+  findBodyEmptyRuns,
+  findBodyPmAnchor,
+  findBodyPmAnchors,
+  findBodyPmSpans,
+} from '@eigenpal/docx-core/layout-bridge';
 import {
   selectionToRects,
   getCaretPosition,
   type SelectionRect,
   type CaretPosition,
-} from '@eigenpal/docx-core/layout-bridge/selectionRects';
-import { findWordBoundaries } from '@eigenpal/docx-core/utils/textSelection';
+} from '@eigenpal/docx-core/layout-bridge';
+import { findWordBoundaries } from '@eigenpal/docx-core/utils';
+import { emuToPixels, pixelsToEmu } from '@eigenpal/docx-core/utils';
 
 // Layout painter
 import { LayoutPainter, type BlockLookup } from '@eigenpal/docx-core/layout-painter';
 import {
   renderPages,
   type RenderPageOptions,
+  type RenderPagesUpdateKind,
   type HeaderFooterContent,
   type FootnoteRenderItem,
-} from '@eigenpal/docx-core/layout-painter/renderPage';
+  isTextWrappingFloatingImageRun,
+} from '@eigenpal/docx-core/layout-painter';
 
 // Selection sync
 import { LayoutSelectionGate } from './LayoutSelectionGate';
@@ -110,7 +120,7 @@ import { useVisualLineNavigation } from './useVisualLineNavigation';
 import { useDragAutoScroll } from './useDragAutoScroll';
 
 // Sidebar constants
-import { SIDEBAR_WIDTH, SIDEBAR_PAGE_GAP } from '../components/sidebar/constants';
+import { SIDEBAR_DOCUMENT_SHIFT } from '../components/sidebar/constants';
 
 // Types
 import type {
@@ -121,15 +131,91 @@ import type {
   HeaderFooter,
 } from '@eigenpal/docx-core/types/document';
 import type { Footnote } from '@eigenpal/docx-core/types/content';
-import { getFootnoteText } from '@eigenpal/docx-core/docx/footnoteParser';
+import { getFootnoteText } from '@eigenpal/docx-core/docx';
 import {
   collectFootnoteRefs,
   mapFootnotesToPages,
-  buildFootnoteContentMap,
   calculateFootnoteReservedHeights,
-} from '@eigenpal/docx-core/layout-bridge/footnoteLayout';
+  buildFootnoteContentMap,
+  convertHeaderFooterToContent,
+  detectTableInsertHover,
+  TABLE_INSERT_HIDE_DELAY_MS as TABLE_INSERT_HIDE_DELAY,
+} from '@eigenpal/docx-core/layout-bridge';
 import type { RenderedDomContext } from '../plugin-api/types';
 import { createRenderedDomContext } from '../plugin-api/RenderedDomContext';
+import { findVerticalScrollParentOrRoot } from './findVerticalScrollParent';
+
+/**
+ * Vertically scroll `container` so `el`'s center aligns with the container's visible center.
+ * Avoids `element.scrollIntoView()` — it misbehaves when content sits under CSS `transform`
+ * (e.g. zoom viewport); see `useVisualLineNavigation` scrollIntoViewIfNeeded comment.
+ */
+function scrollElementCenterIntoContainer(
+  el: HTMLElement,
+  container: HTMLElement,
+  behavior: ScrollBehavior
+): void {
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  const elCenter = eRect.top + eRect.height / 2;
+  const cCenter = cRect.top + cRect.height / 2;
+  const delta = elCenter - cCenter;
+  const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+  const targetTop = Math.max(0, Math.min(maxScroll, container.scrollTop + delta));
+  if (behavior === 'smooth') {
+    container.scrollTo({ top: targetTop, behavior: 'smooth' });
+  } else {
+    container.scrollTop = targetTop;
+  }
+}
+
+/**
+ * Run `fn` after layout/paint has settled (3 nested rAFs). Aborts if `signal`
+ * fires before any of the frames runs, and tracks rAF ids so they can be
+ * cancelled by the caller. Used for the virtualized-paint settle path in
+ * scrollToPositionImpl / scrollToParaIdImpl.
+ */
+function runAfterPaint(fn: () => void, signal: AbortSignal): void {
+  if (signal.aborted) return;
+  const id1 = requestAnimationFrame(() => {
+    if (signal.aborted) return;
+    const id2 = requestAnimationFrame(() => {
+      if (signal.aborted) return;
+      const id3 = requestAnimationFrame(() => {
+        if (signal.aborted) return;
+        fn();
+      });
+      signal.addEventListener('abort', () => cancelAnimationFrame(id3), { once: true });
+    });
+    signal.addEventListener('abort', () => cancelAnimationFrame(id2), { once: true });
+  });
+  signal.addEventListener('abort', () => cancelAnimationFrame(id1), { once: true });
+}
+
+/**
+ * Largest painted body `[data-pm-start]` value ≤ `pmPos`. Used to anchor scroll
+ * restore when `renderPages` rebuilds the DOM. Header/footer anchors are skipped
+ * because their PM positions live in a separate document and would mis-resolve.
+ */
+function findPaintedPmStartAtOrBefore(pages: HTMLElement, pmPos: number): number | null {
+  let best: number | null = null;
+  const list = findBodyPmAnchors(pages);
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i].dataset.pmStart;
+    if (raw == null) continue;
+    const p = Number(raw);
+    if (Number.isNaN(p)) continue;
+    if (p <= pmPos && (best === null || p > best)) best = p;
+  }
+  return best;
+}
+
+/** Min-height of the zoom/viewport wrapper (padding + page stack). Must match JSX `totalHeight`. */
+function viewportMinHeightPx(layout: Layout, pageGap: number): number {
+  const n = layout.pages.length;
+  const pagesHeight = layout.pages.reduce((sum, page) => sum + page.size.h, 0);
+  return pagesHeight + Math.max(0, n - 1) * pageGap + VIEWPORT_PADDING_TOP + 24;
+}
 
 // =============================================================================
 // TYPES
@@ -144,6 +230,8 @@ export interface PagedEditorProps {
   theme?: Theme | null;
   /** Section properties (page size, margins). */
   sectionProperties?: SectionProperties | null;
+  /** Body-level final section properties, used after the last explicit section break. */
+  finalSectionProperties?: SectionProperties | null;
   /** Header content for all pages (or pages 2+ when titlePg is set). */
   headerContent?: HeaderFooter | null;
   /** Footer content for all pages (or pages 2+ when titlePg is set). */
@@ -165,7 +253,7 @@ export interface PagedEditorProps {
   /** External ProseMirror plugins. */
   externalPlugins?: Plugin[];
   /** Extension manager for plugins/schema/commands (optional — falls back to default) */
-  extensionManager?: import('@eigenpal/docx-core/prosemirror/extensions/ExtensionManager').ExtensionManager;
+  extensionManager?: import('@eigenpal/docx-core/prosemirror/extensions').ExtensionManager;
   /** Callback when editor is ready. */
   onReady?: (ref: PagedEditorRef) => void;
   /** Callback when rendered DOM context is ready. */
@@ -184,8 +272,6 @@ export interface PagedEditorProps {
   style?: CSSProperties;
   /** Whether comments sidebar is open (shifts document left). */
   commentsSidebarOpen?: boolean;
-  /** Sidebar column width in px. Defaults to SIDEBAR_WIDTH. */
-  sidebarWidth?: number;
   /** Sidebar overlay rendered inside the scroll container (scrolls with document). */
   sidebarOverlay?: React.ReactNode;
   /** Ref callback for the scroll container element. */
@@ -197,10 +283,32 @@ export interface PagedEditorProps {
     tooltip?: string;
     anchorRect: DOMRect;
   }) => void;
-  /** Callback when user right-clicks on the pages (for context menu). */
-  onContextMenu?: (data: { x: number; y: number; hasSelection: boolean }) => void;
+  /** Callback when user right-clicks on the pages (for context menu).
+   *  When the right-click target resolves to an image node, `image` carries
+   *  the image's PM doc position, current wrap type, current cssFloat (lets
+   *  the menu disambiguate Square Left vs Square Right), and — for inline
+   *  images only — the rendered EMU offset of the image relative to the
+   *  page content origin. The host promotes that offset into the new
+   *  anchor's `wp:positionH/V` if the user converts inline → anchor. */
+  onContextMenu?: (data: {
+    x: number;
+    y: number;
+    hasSelection: boolean;
+    image?: {
+      pos: number;
+      wrapType: WrapType;
+      cssFloat?: 'left' | 'right' | 'none' | null;
+      inlinePositionEmu?: { horizontalEmu: number; verticalEmu: number };
+    } | null;
+  }) => void;
   /** Callback with pre-computed Y positions for comment/tracked-change anchors (for sidebar positioning without DOM queries). */
   onAnchorPositionsChange?: (positions: Map<string, number>) => void;
+  /**
+   * Callback fired when the page count changes after a layout pass.
+   * Parents use this to keep their own page counters (e.g. scroll indicator,
+   * `getTotalPages()` ref method) in sync without having to poll `getLayout()`.
+   */
+  onTotalPagesChange?: (totalPages: number) => void;
   /** Set of resolved comment IDs — hides highlight for these comments */
   resolvedCommentIds?: Set<number>;
 }
@@ -232,6 +340,16 @@ export interface PagedEditorRef {
   relayout(): void;
   /** Scroll the visible pages to bring a PM position into view. */
   scrollToPosition(pmPos: number): void;
+  /**
+   * Scroll to the paragraph identified by Word `w14:paraId` / PM `paraId`.
+   * @returns whether a matching paragraph was found
+   */
+  scrollToParaId(paraId: string): boolean;
+  /**
+   * Scroll the paginated view so `pageNumber` (1-indexed) is in view.
+   * No-op if the layout isn't ready yet or pageNumber is out of range.
+   */
+  scrollToPage(pageNumber: number): void;
 }
 
 // =============================================================================
@@ -239,7 +357,7 @@ export interface PagedEditorRef {
 // =============================================================================
 
 // Default page size (US Letter at 96 DPI)
-const DEFAULT_PAGE_WIDTH = 816;
+export const DEFAULT_PAGE_WIDTH = 816;
 const DEFAULT_PAGE_HEIGHT = 1056;
 
 // Default margins (1 inch at 96 DPI)
@@ -252,11 +370,8 @@ const DEFAULT_MARGINS: PageMargins = {
 
 const DEFAULT_PAGE_GAP = 24;
 
-/** Distance in px from a row/column boundary that triggers the insert button */
-/** Distance in px from the table edge where boundary detection is active */
-const TABLE_INSERT_EDGE_PROXIMITY = 30;
-/** Delay in ms before hiding the insert button when cursor moves away */
-const TABLE_INSERT_HIDE_DELAY = 200;
+// Table-insert hover constants live in core (`@eigenpal/docx-core/layout-
+// bridge`) so React + Vue share the same hit-test parameters.
 
 // Stable empty array to avoid re-creating on each render
 const EMPTY_PLUGINS: Plugin[] = [];
@@ -283,6 +398,7 @@ const viewportStyles: CSSProperties = {
   alignItems: 'center',
   paddingTop: VIEWPORT_PADDING_TOP,
   paddingBottom: 24,
+  overflowAnchor: 'none',
 };
 
 const pagesContainerStyles: CSSProperties = {
@@ -290,6 +406,7 @@ const pagesContainerStyles: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
+  overflowAnchor: 'none',
 };
 
 const pluginOverlaysStyles: CSSProperties = {
@@ -472,46 +589,36 @@ function getColumns(sectionProps: SectionProperties | null | undefined): ColumnL
   };
 }
 
+function columnWidthForSection(config: SectionLayoutConfig): number {
+  const contentWidth = config.pageSize.w - config.margins.left - config.margins.right;
+  const cols = config.columns;
+  if (!cols || cols.count <= 1) return contentWidth;
+  return Math.floor((contentWidth - (cols.count - 1) * cols.gap) / cols.count);
+}
+
 /**
  * Compute per-block measurement widths by scanning for section breaks.
- * Blocks in multi-column sections must be measured at column width, not full content width.
- *
- * OOXML note: Each section break carries the CURRENT section's properties.
- * Section N's blocks use config from sectionBreak[N].
- * The final section (after all breaks) uses defaultColumns (body-level).
+ * Blocks must be measured with the page width/margins/columns of their own
+ * section so that the layout engine can paginate them against the right
+ * geometry without remeasuring.
  */
 function computePerBlockWidths(
   blocks: FlowBlock[],
-  defaultContentWidth: number,
-  defaultColumns: ColumnLayout | undefined
+  initialConfig: SectionLayoutConfig,
+  finalConfig: SectionLayoutConfig
 ): number[] {
-  function colWidth(cw: number, cols: ColumnLayout): number {
-    if (cols.count <= 1) return cw;
-    return Math.floor((cw - (cols.count - 1) * cols.gap) / cols.count);
-  }
+  const { configs: sectionConfigs, breakIndices } = collectSectionConfigs(
+    blocks,
+    initialConfig,
+    finalConfig
+  );
 
-  // Collect section break indices and their column configs
-  const breakIndices: number[] = [];
-  const sectionConfigs: ColumnLayout[] = [];
-  for (let i = 0; i < blocks.length; i++) {
-    if (blocks[i].kind === 'sectionBreak') {
-      breakIndices.push(i);
-      const sb = blocks[i] as SectionBreakBlock;
-      sectionConfigs.push(sb.columns ?? { count: 1, gap: 0 });
-    }
-  }
-  // Final section uses body-level columns
-  sectionConfigs.push(defaultColumns ?? { count: 1, gap: 0 });
-
-  // Assign widths: section N's blocks use sectionConfigs[N]
   let sectionIdx = 0;
   const widths: number[] = [];
 
   for (let i = 0; i < blocks.length; i++) {
-    const cols = sectionConfigs[sectionIdx];
-    widths.push(colWidth(defaultContentWidth, cols));
+    widths.push(columnWidthForSection(sectionConfigs[sectionIdx] ?? initialConfig));
 
-    // After this section break, move to next section
     if (sectionIdx < breakIndices.length && i === breakIndices[sectionIdx]) {
       sectionIdx++;
     }
@@ -520,65 +627,61 @@ function computePerBlockWidths(
   return widths;
 }
 
-/**
- * Check if an image run is a floating image (should affect text wrapping)
- */
-function isFloatingImageRun(run: ImageRun): boolean {
-  const wrapType = run.wrapType;
-  const displayMode = run.displayMode;
+// `isTextWrappingFloatingImageRun` and `emuToPixels` are imported from core. Local
+// duplicates were drifting from the canonical implementations; sharing
+// keeps them in lockstep across React + Vue adapters.
 
-  // Floating images have specific wrap types that allow text to flow around them
-  if (wrapType && ['square', 'tight', 'through'].includes(wrapType)) {
-    return true;
+export function measureTableCellBlockVisualHeight(block: FlowBlock, blockMeasure: Measure): number {
+  if (block.kind !== 'paragraph' || blockMeasure.kind !== 'paragraph') {
+    if ('totalHeight' in blockMeasure) return blockMeasure.totalHeight;
+    if ('height' in blockMeasure) return blockMeasure.height;
+    return 0;
   }
 
-  // Or explicit float display mode
-  if (displayMode === 'float') {
-    return true;
+  const paragraphBlock = block as ParagraphBlock;
+  const paragraphMeasure = blockMeasure as ParagraphMeasure;
+  const nonEmptyRuns = paragraphBlock.runs.filter(
+    (run) => run.kind !== 'text' || run.text.length > 0
+  );
+  const imageOnlySingleLine =
+    paragraphMeasure.lines.length === 1 &&
+    nonEmptyRuns.length > 0 &&
+    nonEmptyRuns.every((run) => run.kind === 'image');
+
+  if (!imageOnlySingleLine) {
+    return paragraphMeasure.totalHeight;
   }
 
-  return false;
+  const maxImageHeight = nonEmptyRuns.reduce((maxHeight, run) => {
+    return run.kind === 'image' ? Math.max(maxHeight, run.height) : maxHeight;
+  }, 0);
+  const spacingBefore = paragraphBlock.attrs?.spacing?.before ?? 0;
+  const spacingAfter = paragraphBlock.attrs?.spacing?.after ?? 0;
+
+  return spacingBefore + maxImageHeight + spacingAfter;
 }
 
-/**
- * EMU to pixels conversion
- */
-function emuToPixels(emu: number | undefined): number {
-  if (emu === undefined) return 0;
-  return Math.round((emu * 96) / 914400);
+function getTableCellVerticalBorderHeight(cell: TableCell | undefined): number {
+  const top = cell?.borders?.top?.width ?? 0;
+  const bottom = cell?.borders?.bottom?.width ?? 0;
+  return top + bottom;
 }
 
-function resolveTableWidthPx(
-  width: number | undefined,
-  widthType: string | undefined,
-  contentWidth: number
-): number | undefined {
-  if (!width) return undefined;
-  if (widthType === 'pct') {
-    // width is in 50ths of a percent (5000 = 100%)
-    return (contentWidth * width) / 5000;
-  }
-  if (widthType === 'dxa' || !widthType || widthType === 'auto') {
-    return Math.round((width / 20) * 1.333);
-  }
-  return undefined;
-}
-
-function measureTableBlock(tableBlock: TableBlock, contentWidth: number): TableMeasure {
+export function measureTableBlock(tableBlock: TableBlock, contentWidth: number): TableMeasure {
   const DEFAULT_CELL_PADDING_X = 7; // Word default: 108 twips ≈ 7px
   const DEFAULT_CELL_PADDING_Y = 0; // OOXML/TableNormal default: top=0, bottom=0
 
   // columnWidths are already in pixels (converted in toFlowBlocks)
   let columnWidths = tableBlock.columnWidths ?? [];
   const explicitWidthPx = resolveTableWidthPx(tableBlock.width, tableBlock.widthType, contentWidth);
+  const colCount = countTableColumns(tableBlock);
+  const targetWidth = explicitWidthPx ?? contentWidth;
 
-  if (columnWidths.length === 0 && tableBlock.rows.length > 0) {
-    // Determine total columns from first row's colSpans
-    const colCount = tableBlock.rows[0].cells.reduce((sum, cell) => sum + (cell.colSpan ?? 1), 0);
-    const totalWidth = explicitWidthPx ?? contentWidth;
-    const equalWidth = totalWidth / Math.max(1, colCount);
-    columnWidths = Array(colCount).fill(equalWidth);
-  } else if (columnWidths.length > 0 && explicitWidthPx) {
+  if (tableBlock.rows.length > 0) {
+    columnWidths = normalizeTableColumnWidths(columnWidths, colCount, targetWidth);
+  }
+
+  if (columnWidths.length > 0 && explicitWidthPx) {
     const totalWidth = columnWidths.reduce((sum, w) => sum + w, 0);
     if (totalWidth > 0 && Math.abs(totalWidth - explicitWidthPx) > 1) {
       const scale = explicitWidthPx / totalWidth;
@@ -632,7 +735,10 @@ function measureTableBlock(tableBlock: TableBlock, contentWidth: number): TableM
         }
         // Fallback to cell.width or default if columnWidths not available
         if (cellWidth === 0) {
-          cellWidth = cell.width ?? 100;
+          cellWidth =
+            (cell.width && cell.width > 0
+              ? cell.width
+              : resolveTableWidthPx(cell.widthValue, cell.widthType, targetWidth)) ?? 100;
         }
         columnIndex += colSpan;
         while (occupied.has(columnIndex)) columnIndex++;
@@ -657,18 +763,31 @@ function measureTableBlock(tableBlock: TableBlock, contentWidth: number): TableM
     const row = rows[rowIdx];
     const sourceRowCells = tableBlock.rows[rowIdx]?.cells;
     let maxHeight = 0;
+    let maxVerticalBorderHeight = 0;
     for (let cellIdx = 0; cellIdx < row.cells.length; cellIdx++) {
       const cell = row.cells[cellIdx];
       const sourceCell = sourceRowCells?.[cellIdx];
-      cell.height = cell.blocks.reduce((h, m) => {
-        // Get height from any measure type (paragraph or table)
-        if ('totalHeight' in m) return h + m.totalHeight;
-        return h;
-      }, 0);
+      // `paragraphMeasure.totalHeight` already includes spacing.before /
+      // spacing.after; just sum the block heights. Adjacent-paragraph
+      // collapse rules don't apply across the cell-content boundary, so this
+      // matches Word's per-cell layout.
+      let contentHeight = 0;
+      for (let blockIdx = 0; blockIdx < cell.blocks.length; blockIdx++) {
+        const sourceBlock = sourceCell?.blocks[blockIdx];
+        const blockMeasure = cell.blocks[blockIdx];
+        if (!sourceBlock || !blockMeasure) continue;
+        contentHeight += measureTableCellBlockVisualHeight(sourceBlock, blockMeasure);
+      }
+
+      cell.height = contentHeight;
       const padTop = sourceCell?.padding?.top ?? DEFAULT_CELL_PADDING_Y;
       const padBottom = sourceCell?.padding?.bottom ?? DEFAULT_CELL_PADDING_Y;
       cell.height += padTop + padBottom;
       maxHeight = Math.max(maxHeight, cell.height);
+      maxVerticalBorderHeight = Math.max(
+        maxVerticalBorderHeight,
+        getTableCellVerticalBorderHeight(sourceCell)
+      );
     }
 
     // Apply heightRule from the source row
@@ -681,10 +800,10 @@ function measureTableBlock(tableBlock: TableBlock, contentWidth: number): TableM
     } else if (explicitHeight) {
       // Both 'atLeast' and 'auto' (OOXML default) treat the value as minimum height.
       // ECMA-376 §17.4.81: when hRule is absent or "auto", val is the minimum row height.
-      row.height = Math.max(maxHeight, explicitHeight);
+      row.height = Math.max(maxHeight + maxVerticalBorderHeight, explicitHeight);
     } else {
       // No explicit height — use content height directly.
-      row.height = maxHeight;
+      row.height = maxHeight + maxVerticalBorderHeight;
     }
   }
 
@@ -730,7 +849,7 @@ function extractFloatingZones(blocks: FlowBlock[], contentWidth: number): Floati
       if (run.kind !== 'image') continue;
       const imgRun = run as ImageRun;
 
-      if (!isFloatingImageRun(imgRun)) continue;
+      if (!isTextWrappingFloatingImageRun(imgRun)) continue;
 
       // Calculate Y position based on vertical alignment
       let topY = 0;
@@ -1034,475 +1153,19 @@ function measureBlocks(blocks: FlowBlock[], contentWidth: number | number[]): Me
   });
 }
 
-/**
- * Convert document Run content to FlowBlock runs.
- * Handles text, tabs, fields (PAGE, NUMPAGES), etc.
- *
- * Fields like PAGE and NUMPAGES are converted to FieldRun which gets
- * substituted with actual values at render time (in renderParagraph).
- *
- * @param content - Array of ParagraphContent from document
- */
-function convertDocumentRunsToFlowRuns(content: unknown[]): Run[] {
-  const runs: Run[] = [];
-
-  for (const item of content) {
-    const itemObj = item as Record<string, unknown>;
-
-    // Handle Run type (from Document)
-    if (itemObj.type === 'run' && Array.isArray(itemObj.content)) {
-      const formatting = itemObj.formatting as Record<string, unknown> | undefined;
-      const runFormatting: RunFormatting = {};
-
-      if (formatting) {
-        if (formatting.bold) runFormatting.bold = true;
-        if (formatting.italic) runFormatting.italic = true;
-        if (formatting.underline) runFormatting.underline = true;
-        if (formatting.strike) runFormatting.strike = true;
-        if (formatting.color) {
-          const color = formatting.color as Record<string, unknown>;
-          if (color.val) runFormatting.color = `#${color.val}`;
-          else if (color.rgb) runFormatting.color = `#${color.rgb}`;
-        }
-        if (formatting.fontSize) {
-          runFormatting.fontSize = (formatting.fontSize as number) / 2; // half-points to points
-        }
-        if (formatting.fontFamily) {
-          const ff = formatting.fontFamily as Record<string, unknown>;
-          runFormatting.fontFamily = (ff.ascii || ff.hAnsi) as string;
-        }
-      }
-
-      // Process run content
-      for (const runContent of itemObj.content as unknown[]) {
-        const rc = runContent as Record<string, unknown>;
-
-        if (rc.type === 'text' && typeof rc.text === 'string') {
-          runs.push({
-            kind: 'text',
-            text: rc.text,
-            ...runFormatting,
-          });
-        } else if (rc.type === 'tab') {
-          runs.push({
-            kind: 'tab',
-            ...runFormatting,
-          });
-        } else if (rc.type === 'break') {
-          runs.push({
-            kind: 'lineBreak',
-          });
-        } else if (rc.type === 'drawing' && rc.image) {
-          // Handle images/drawings
-          const image = rc.image as Record<string, unknown>;
-          const size = image.size as { width: number; height: number } | undefined;
-          // EMU to pixels: 1 inch = 914400 EMU, 1 inch = 96 pixels
-          const emuToPixels = (emu: number) => Math.round((emu / 914400) * 96);
-          const widthPx = size?.width ? emuToPixels(size.width) : 100;
-          const heightPx = size?.height ? emuToPixels(size.height) : 100;
-
-          // Check for position (floating/anchored images)
-          const position = image.position as
-            | {
-                horizontal?: { relativeTo?: string; posOffset?: number; align?: string };
-                vertical?: { relativeTo?: string; posOffset?: number; align?: string };
-              }
-            | undefined;
-
-          runs.push({
-            kind: 'image',
-            src: (image.src as string) || '',
-            width: widthPx,
-            height: heightPx,
-            alt: (image.alt as string) || undefined,
-            // Include position for floating images
-            position: position
-              ? {
-                  horizontal: position.horizontal,
-                  vertical: position.vertical,
-                }
-              : undefined,
-          } as Run);
-        }
-      }
-    }
-
-    // Handle SimpleField (w:fldSimple) - PAGE, NUMPAGES, etc.
-    if (itemObj.type === 'simpleField') {
-      const fieldType = itemObj.fieldType as string;
-
-      // Extract formatting from content runs (same approach as ComplexField)
-      const fieldFormatting: RunFormatting = {};
-      if (Array.isArray(itemObj.content) && itemObj.content.length > 0) {
-        const firstRun = itemObj.content[0] as Record<string, unknown>;
-        if (firstRun?.type === 'run' && firstRun.formatting) {
-          const formatting = firstRun.formatting as Record<string, unknown>;
-          if (formatting.fontSize) {
-            fieldFormatting.fontSize = (formatting.fontSize as number) / 2;
-          }
-          if (formatting.fontFamily) {
-            const ff = formatting.fontFamily as Record<string, unknown>;
-            fieldFormatting.fontFamily = (ff.ascii || ff.hAnsi) as string;
-          }
-          if (formatting.bold) fieldFormatting.bold = true;
-          if (formatting.italic) fieldFormatting.italic = true;
-          if (formatting.color) {
-            const c = formatting.color as Record<string, unknown>;
-            const val = (c.rgb || c.val) as string | undefined;
-            if (val) fieldFormatting.color = val.startsWith('#') ? val : `#${val}`;
-          }
-        }
-      }
-
-      if (fieldType === 'PAGE') {
-        runs.push({
-          kind: 'field',
-          fieldType: 'PAGE',
-          fallback: '1',
-          ...fieldFormatting,
-        });
-      } else if (fieldType === 'NUMPAGES') {
-        runs.push({
-          kind: 'field',
-          fieldType: 'NUMPAGES',
-          fallback: '1',
-          ...fieldFormatting,
-        });
-      } else if (Array.isArray(itemObj.content)) {
-        // Use the display content for other fields
-        const displayRuns = convertDocumentRunsToFlowRuns(itemObj.content as unknown[]);
-        runs.push(...displayRuns);
-      }
-      continue;
-    }
-
-    // Handle ComplexField (fldChar sequence)
-    if (itemObj.type === 'complexField') {
-      const fieldType = itemObj.fieldType as string;
-
-      // Extract formatting from fieldResult runs if available
-      const fieldFormatting: RunFormatting = {};
-      if (Array.isArray(itemObj.fieldResult) && itemObj.fieldResult.length > 0) {
-        const firstRun = itemObj.fieldResult[0] as Record<string, unknown>;
-        if (firstRun?.type === 'run' && firstRun.formatting) {
-          const formatting = firstRun.formatting as Record<string, unknown>;
-          if (formatting.fontSize) {
-            fieldFormatting.fontSize = (formatting.fontSize as number) / 2;
-          }
-          if (formatting.fontFamily) {
-            const ff = formatting.fontFamily as Record<string, unknown>;
-            fieldFormatting.fontFamily = (ff.ascii || ff.hAnsi) as string;
-          }
-          if (formatting.bold) fieldFormatting.bold = true;
-          if (formatting.italic) fieldFormatting.italic = true;
-          if (formatting.color) {
-            const c = formatting.color as Record<string, unknown>;
-            const val = (c.rgb || c.val) as string | undefined;
-            if (val) fieldFormatting.color = val.startsWith('#') ? val : `#${val}`;
-          }
-        }
-      }
-
-      if (fieldType === 'PAGE') {
-        runs.push({
-          kind: 'field',
-          fieldType: 'PAGE',
-          fallback: '1',
-          ...fieldFormatting,
-        });
-      } else if (fieldType === 'NUMPAGES') {
-        runs.push({
-          kind: 'field',
-          fieldType: 'NUMPAGES',
-          fallback: '1',
-          ...fieldFormatting,
-        });
-      } else if (Array.isArray(itemObj.fieldResult)) {
-        // Use the fieldResult for other fields
-        const displayRuns = convertDocumentRunsToFlowRuns(itemObj.fieldResult as unknown[]);
-        runs.push(...displayRuns);
-      }
-    }
-
-    // Handle Hyperlink
-    if (itemObj.type === 'hyperlink' && Array.isArray(itemObj.children)) {
-      const childRuns = convertDocumentRunsToFlowRuns(itemObj.children as unknown[]);
-      runs.push(...childRuns);
-    }
-  }
-
-  return runs;
-}
-
-type HeaderFooterMetrics = {
-  section: 'header' | 'footer';
-  pageSize: { w: number; h: number };
-  margins: PageMargins;
-};
-
-type PositionedAxis = {
-  relativeTo?: string;
-  posOffset?: number;
-  align?: string;
-  alignment?: string;
-};
-
-function getPositionAlignment(axis: PositionedAxis | undefined): string | undefined {
-  return axis?.align ?? axis?.alignment;
-}
-
-function resolveHeaderFooterVisualTop(
-  run: ImageRun,
-  paragraphY: number,
-  flowHeight: number,
-  metrics: HeaderFooterMetrics
-): number {
-  const flowTop =
-    metrics.section === 'header'
-      ? (metrics.margins.header ?? 48)
-      : metrics.pageSize.h - (metrics.margins.footer ?? 48) - flowHeight;
-  const vertical = run.position?.vertical;
-
-  if (!vertical) {
-    return paragraphY;
-  }
-
-  const align = getPositionAlignment(vertical);
-  const offsetPx = vertical.posOffset !== undefined ? emuToPixels(vertical.posOffset) : undefined;
-
-  if (vertical.relativeTo === 'page') {
-    if (offsetPx !== undefined) return offsetPx - flowTop;
-    if (align === 'top') return -flowTop;
-    if (align === 'bottom') return metrics.pageSize.h - run.height - flowTop;
-    if (align === 'center') return (metrics.pageSize.h - run.height) / 2 - flowTop;
-  }
-
-  if (vertical.relativeTo === 'margin') {
-    const marginTop = metrics.margins.top;
-    const marginHeight = metrics.pageSize.h - metrics.margins.top - metrics.margins.bottom;
-    if (offsetPx !== undefined) return marginTop + offsetPx - flowTop;
-    if (align === 'top') return marginTop - flowTop;
-    if (align === 'bottom') return marginTop + marginHeight - run.height - flowTop;
-    if (align === 'center') return marginTop + (marginHeight - run.height) / 2 - flowTop;
-  }
-
-  if (offsetPx !== undefined) {
-    return paragraphY + offsetPx;
-  }
-
-  return paragraphY;
-}
-
-function calculateHeaderFooterVisualBounds(
-  blocks: FlowBlock[],
-  measures: Measure[],
-  flowHeight: number,
-  metrics: HeaderFooterMetrics
-): { visualTop: number; visualBottom: number } {
-  let visualTop = 0;
-  let visualBottom = flowHeight;
-  let cursorY = 0;
-
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i];
-    const measure = measures[i];
-    if (block?.kind !== 'paragraph' || measure?.kind !== 'paragraph') {
-      continue;
-    }
-
-    const paragraphBlock = block as ParagraphBlock;
-    const paragraphStartY = cursorY;
-    const paragraphBottomY = paragraphStartY + measure.totalHeight;
-    visualTop = Math.min(visualTop, paragraphStartY);
-    visualBottom = Math.max(visualBottom, paragraphBottomY);
-
-    for (const run of paragraphBlock.runs) {
-      if (run.kind !== 'image' || !run.position) continue;
-      const imageRun = run as ImageRun;
-      const runTop = resolveHeaderFooterVisualTop(imageRun, paragraphStartY, flowHeight, metrics);
-      visualTop = Math.min(visualTop, runTop);
-      visualBottom = Math.max(visualBottom, runTop + imageRun.height);
-    }
-
-    cursorY = paragraphBottomY;
-  }
-
-  return { visualTop, visualBottom };
-}
-
-/**
- * Convert HeaderFooter (document type) to HeaderFooterContent (render type).
- *
- * This converts parsed header/footer content into FlowBlocks that can be
- * rendered by the layout painter.
- *
- * Fields like PAGE and NUMPAGES are converted to FieldRun which gets
- * substituted with actual values at render time.
- *
- * @param headerFooter - The header/footer document content
- * @param contentWidth - Available width for content
- */
-function convertHeaderFooterToContent(
-  headerFooter: HeaderFooter | null | undefined,
-  contentWidth: number,
-  metrics: HeaderFooterMetrics
-): HeaderFooterContent | undefined {
-  if (!headerFooter || !headerFooter.content || headerFooter.content.length === 0) {
-    return undefined;
-  }
-
-  const blocks: FlowBlock[] = [];
-
-  for (const item of headerFooter.content) {
-    const itemObj = item as unknown as Record<string, unknown>;
-
-    // Check for Document Paragraph type
-    if (itemObj.type === 'paragraph' && Array.isArray(itemObj.content)) {
-      const formatting = itemObj.formatting as Record<string, unknown> | undefined;
-      const attrs: ParagraphAttrs = {};
-
-      if (formatting) {
-        if (formatting.alignment) {
-          const align = formatting.alignment as string;
-          if (align === 'both') attrs.alignment = 'justify';
-          else if (['left', 'center', 'right', 'justify'].includes(align)) {
-            attrs.alignment = align as 'left' | 'center' | 'right' | 'justify';
-          }
-        }
-        // Convert paragraph borders (e.g., header bottom line, footer top line)
-        if (formatting.borders) {
-          const borders = formatting.borders as Record<string, unknown>;
-          const converted: ParagraphBorders = {};
-          for (const side of ['top', 'bottom', 'left', 'right', 'between'] as const) {
-            const b = borders[side] as
-              | { style?: string; size?: number; color?: Record<string, string> }
-              | undefined;
-            if (b) {
-              const layoutBorder = convertBorderSpecToLayout(b);
-              if (layoutBorder) converted[side] = layoutBorder;
-            }
-          }
-          if (Object.keys(converted).length > 0) {
-            attrs.borders = converted;
-          }
-        }
-        // Convert spacing for measurement.
-        // NOTE: Only convert lineSpacing (affects line height). Skip spaceBefore/
-        // spaceAfter — these are typically style-resolved artifacts (e.g., from
-        // Normal style) inlined during the PM→document round-trip, not intentional
-        // header/footer formatting. The layout painter renders header/footer
-        // paragraphs without inter-paragraph margins, so measurement must match.
-        if (formatting.lineSpacing != null) {
-          const spacingAttrs: ParagraphSpacing = {};
-          const rule = formatting.lineSpacingRule as string | undefined;
-          if (rule === 'exact' || rule === 'atLeast') {
-            spacingAttrs.line = twipsToPixels(formatting.lineSpacing as number);
-            spacingAttrs.lineUnit = 'px';
-            spacingAttrs.lineRule = rule;
-          } else {
-            // Auto — line spacing is in 240ths of a line
-            spacingAttrs.line = (formatting.lineSpacing as number) / 240;
-            spacingAttrs.lineUnit = 'multiplier';
-            spacingAttrs.lineRule = 'auto';
-          }
-          attrs.spacing = spacingAttrs;
-        }
-        // Convert tab stops (needed for center/right tab alignment in headers/footers)
-        if (Array.isArray(formatting.tabs) && formatting.tabs.length > 0) {
-          attrs.tabs = (
-            formatting.tabs as Array<{
-              position: number;
-              alignment: string;
-              leader?: string;
-            }>
-          ).map((tab) => {
-            const align =
-              tab.alignment === 'left'
-                ? 'start'
-                : tab.alignment === 'right'
-                  ? 'end'
-                  : tab.alignment;
-            return {
-              val: align as 'start' | 'end' | 'center' | 'decimal' | 'bar' | 'clear',
-              pos: twipsToPixels(tab.position),
-              leader: tab.leader as
-                | 'none'
-                | 'dot'
-                | 'hyphen'
-                | 'underscore'
-                | 'heavy'
-                | 'middleDot'
-                | undefined,
-            };
-          });
-        }
-      }
-
-      const runs = convertDocumentRunsToFlowRuns(itemObj.content as unknown[]);
-
-      // Empty paragraphs (blank lines) should still measure — add empty text run
-      if (runs.length === 0) {
-        runs.push({ kind: 'text' as const, text: '' });
-      }
-      const paragraphBlock: ParagraphBlock = {
-        kind: 'paragraph',
-        id: String(blocks.length),
-        runs,
-        attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
-      };
-      blocks.push(paragraphBlock);
-    }
-  }
-
-  if (blocks.length === 0) {
-    return undefined;
-  }
-
-  // Build blocks for measurement that exclude floating images
-  // (floating images are positioned absolutely, don't affect paragraph height)
-  const blocksForMeasure: FlowBlock[] = blocks.map((block) => {
-    if (block.kind !== 'paragraph') return block;
-    const pb = block as ParagraphBlock;
-    const hasFloating = pb.runs.some(
-      (r) => r.kind === 'image' && 'position' in r && (r as Record<string, unknown>).position
-    );
-    if (!hasFloating) return block;
-    const inlineRuns = pb.runs.filter(
-      (r) => !(r.kind === 'image' && 'position' in r && (r as Record<string, unknown>).position)
-    );
-    // If only floating images remain, add an empty text run so the paragraph still measures
-    if (inlineRuns.length === 0) {
-      inlineRuns.push({ kind: 'text' as const, text: '' });
-    }
-    return { ...pb, runs: inlineRuns };
-  });
-
-  const measures = measureBlocks(blocksForMeasure, contentWidth);
-  const totalHeight = measures.reduce((h, m) => {
-    if (m.kind === 'paragraph') {
-      return h + m.totalHeight;
-    }
-    return h;
-  }, 0);
-  const { visualTop, visualBottom } = calculateHeaderFooterVisualBounds(
-    blocks,
-    measures,
-    totalHeight,
-    metrics
-  );
-
-  return {
-    blocks,
-    measures,
-    height: totalHeight,
-    visualTop,
-    visualBottom,
-  };
-}
+// HF metrics, visual-bounds helpers, normalizeHeaderFooterMeasureBlocks,
+// and convertHeaderFooterToContent live in
+// `@eigenpal/docx-core/layout-bridge` (headerFooterLayout.ts). This adapter
+// just hands its `measureBlocks` callback into the core helper so the core
+// pipeline runs without dragging in Canvas/font-metric dependencies.
 
 // =============================================================================
 // FOOTNOTE HELPERS
 // =============================================================================
+//
+// Footnote conversion logic now lives in core (`@eigenpal/docx-core/layout-
+// bridge`). This adapter just hands its `measureBlocks` callback over so the
+// core pipeline can run without dragging in Canvas/font-metric dependencies.
 
 /**
  * Build per-page footnote render items from page footnote mapping.
@@ -1561,6 +1224,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       styles,
       theme: _theme,
       sectionProperties,
+      finalSectionProperties,
       headerContent,
       footerContent,
       firstPageHeaderContent,
@@ -1581,12 +1245,12 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       className,
       style,
       commentsSidebarOpen = false,
-      sidebarWidth: sidebarWidthProp,
       sidebarOverlay,
       scrollContainerRef: scrollContainerRefProp,
       onHyperlinkClick,
       onContextMenu,
       onAnchorPositionsChange,
+      onTotalPagesChange,
       resolvedCommentIds,
     } = props;
 
@@ -1601,6 +1265,16 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     // Refs
     const containerRef = useRef<HTMLDivElement>(null);
     const pagesContainerRef = useRef<HTMLDivElement>(null);
+    /** Viewport wrapper: sync minHeight/marginBottom in layout pipeline before scroll restore. */
+    const viewportLayoutRef = useRef<HTMLDivElement>(null);
+    const pendingScrollRestoreRef = useRef<{
+      renderKind: RenderPagesUpdateKind;
+      ratio: number;
+      scrollTopSnapshot: number | null;
+      domAnchorPmStart: number | null;
+      domAnchorOffsetInScroller: number;
+    } | null>(null);
+    const pendingIncrementalScrollSnapshotWrittenAtRef = useRef(0);
     const hiddenPMRef = useRef<HiddenProseMirrorRef>(null);
     const painterRef = useRef<LayoutPainter | null>(null);
 
@@ -1632,6 +1306,18 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
     // State
     const [layout, setLayout] = useState<Layout | null>(null);
+    const lastTotalPagesRef = useRef<number>(0);
+    const onTotalPagesChangeRef = useRef(onTotalPagesChange);
+    onTotalPagesChangeRef.current = onTotalPagesChange;
+    useEffect(() => {
+      // Fires on every page-count change including N → 0 (e.g. doc cleared),
+      // so consumers don't get stuck showing the previous count. ref=0 init
+      // matches `layout?.pages.length ?? 0` so we don't fire on initial mount.
+      const total = layout?.pages.length ?? 0;
+      if (total === lastTotalPagesRef.current) return;
+      lastTotalPagesRef.current = total;
+      onTotalPagesChangeRef.current?.(total);
+    }, [layout]);
     const [blocks, setBlocks] = useState<FlowBlock[]>([]);
     const [measures, setMeasures] = useState<Measure[]>([]);
     const [isFocused, setIsFocused] = useState(false);
@@ -1731,6 +1417,14 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     const pageSize = useMemo(() => getPageSize(sectionProperties), [sectionProperties]);
     const margins = useMemo(() => getMargins(sectionProperties), [sectionProperties]);
     const columns = useMemo(() => getColumns(sectionProperties), [sectionProperties]);
+    const { finalPageSize, finalMargins, finalColumns } = useMemo(() => {
+      const props = finalSectionProperties ?? sectionProperties;
+      return {
+        finalPageSize: getPageSize(props),
+        finalMargins: getMargins(props),
+        finalColumns: getColumns(props),
+      };
+    }, [finalSectionProperties, sectionProperties]);
     const contentWidth = pageSize.w - margins.left - margins.right;
 
     // Initialize painter using useMemo to ensure it's ready before first render callbacks
@@ -1766,6 +1460,25 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         // Signal layout is starting
         syncCoordinator.onLayoutStart();
 
+        /** Re-clamp scroll when a second layout pass runs before useLayoutEffect consumes pending. */
+        const applyPendingIncrementalScrollSnapshot = (onlyIfSnapshotJustWritten: boolean) => {
+          const pend = pendingScrollRestoreRef.current;
+          if (pend?.renderKind !== 'incremental' || pend.scrollTopSnapshot == null) return;
+          if (onlyIfSnapshotJustWritten) {
+            const age = performance.now() - pendingIncrementalScrollSnapshotWrittenAtRef.current;
+            if (age > 32) return;
+          }
+          const pe0 = pagesContainerRef.current;
+          const sp0 = pe0 ? (getScrollContainer() ?? findVerticalScrollParentOrRoot(pe0)) : null;
+          if (!sp0?.isConnected) return;
+          const max0 = Math.max(1, sp0.scrollHeight - sp0.clientHeight);
+          const target = Math.min(Math.max(0, pend.scrollTopSnapshot), max0);
+          if (Math.abs(sp0.scrollTop - target) > 0.5) {
+            sp0.scrollTop = target;
+          }
+        };
+        applyPendingIncrementalScrollSnapshot(true);
+
         try {
           // Step 1: Convert PM doc to flow blocks
           let stepStart = performance.now();
@@ -1787,7 +1500,11 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           // neighboring paragraphs' line widths.
           stepStart = performance.now();
           // Compute per-block widths accounting for section breaks with different column configs
-          const blockWidths = computePerBlockWidths(newBlocks, contentWidth, columns);
+          const blockWidths = computePerBlockWidths(
+            newBlocks,
+            { pageSize, margins, columns },
+            { pageSize: finalPageSize, margins: finalMargins, columns: finalColumns }
+          );
           const newMeasures = measureBlocks(newBlocks, blockWidths);
           stepTime = performance.now() - stepStart;
           if (stepTime > 1000) {
@@ -1805,22 +1522,35 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           // to compute effective margins when header content exceeds available space)
           const hfMetricsHeader = { section: 'header' as const, pageSize, margins };
           const hfMetricsFooter = { section: 'footer' as const, pageSize, margins };
+          const hfOptions = { styles, theme: _theme, measureBlocks };
           const headerContentForRender = convertHeaderFooterToContent(
             headerContent,
             contentWidth,
-            hfMetricsHeader
+            hfMetricsHeader,
+            hfOptions
           );
           const footerContentForRender = convertHeaderFooterToContent(
             footerContent,
             contentWidth,
-            hfMetricsFooter
+            hfMetricsFooter,
+            hfOptions
           );
           const hasTitlePg = sectionProperties?.titlePg === true;
           const firstPageHeaderForRender = hasTitlePg
-            ? convertHeaderFooterToContent(firstPageHeaderContent, contentWidth, hfMetricsHeader)
+            ? convertHeaderFooterToContent(
+                firstPageHeaderContent,
+                contentWidth,
+                hfMetricsHeader,
+                hfOptions
+              )
             : undefined;
           const firstPageFooterForRender = hasTitlePg
-            ? convertHeaderFooterToContent(firstPageFooterContent, contentWidth, hfMetricsFooter)
+            ? convertHeaderFooterToContent(
+                firstPageFooterContent,
+                contentWidth,
+                hfMetricsFooter,
+                hfOptions
+              )
             : undefined;
 
           // Adjust margins if header/footer content exceeds available space
@@ -1843,20 +1573,37 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             hfFooterHeight(firstPageFooterForRender)
           );
 
+          // When header/footer content exceeds the authored margin space,
+          // extend the margins so body content gets pushed clear of the
+          // header and footer. Apply to:
+          //   1. `margins` (body-level fallback used when a section break
+          //      doesn't carry its own margins)
+          //   2. `finalMargins` (used by the trailing section)
+          //   3. Every `sb.margins` carried on `sectionBreak` blocks — the
+          //      layout engine prefers these over the body-level fallback,
+          //      so without this they keep the unextended OOXML values and
+          //      the body still overlaps header/footer.
+          const extendHeader = headerContentHeight > availableHeaderSpace;
+          const extendFooter = footerContentHeight > availableFooterSpace;
           let effectiveMargins = margins;
-          if (
-            headerContentHeight > availableHeaderSpace ||
-            footerContentHeight > availableFooterSpace
-          ) {
-            effectiveMargins = { ...margins };
-            if (headerContentHeight > availableHeaderSpace) {
-              effectiveMargins.top = Math.max(margins.top, headerDistance + headerContentHeight);
-            }
-            if (footerContentHeight > availableFooterSpace) {
-              effectiveMargins.bottom = Math.max(
-                margins.bottom,
-                footerDistance + footerContentHeight
-              );
+          let effectiveFinalMargins = finalMargins;
+          if (extendHeader || extendFooter) {
+            const extend = (m: PageMargins): PageMargins => {
+              const out = { ...m };
+              if (extendHeader) {
+                out.top = Math.max(m.top, headerDistance + headerContentHeight);
+              }
+              if (extendFooter) {
+                out.bottom = Math.max(m.bottom, footerDistance + footerContentHeight);
+              }
+              return out;
+            };
+            effectiveMargins = extend(margins);
+            effectiveFinalMargins = extend(finalMargins);
+            for (const block of newBlocks) {
+              if (block.kind !== 'sectionBreak') continue;
+              const sb = block as SectionBreakBlock;
+              if (sb.margins) sb.margins = extend(sb.margins);
             }
           }
 
@@ -1867,7 +1614,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           let footnoteContentMap = new Map<number, { displayNumber: number; height: number }>();
 
           // Common layout options for all passes
-          const bodyBreakType = sectionProperties?.sectionStart as
+          const bodyBreakType = finalSectionProperties?.sectionStart as
             | 'continuous'
             | 'nextPage'
             | 'evenPage'
@@ -1876,7 +1623,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           const layoutOpts = {
             pageSize,
             margins: effectiveMargins,
-            columns,
+            finalPageSize,
+            finalMargins: effectiveFinalMargins,
+            columns: finalColumns,
             bodyBreakType,
             pageGap,
           };
@@ -1888,11 +1637,20 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             // Map footnote refs to pages
             pageFootnoteMap = mapFootnotesToPages(pass1Layout.pages, footnoteRefs);
 
-            // Build footnote content and measure heights
+            // Build footnote content via the core pipeline. Styles + theme
+            // thread through so footnotes containing themed shading or
+            // styled tables resolve their colors / fonts the same way the
+            // body does. The adapter supplies its `measureBlocks` so core
+            // stays Canvas-free.
             footnoteContentMap = buildFootnoteContentMap(
               document!.package.footnotes!,
               footnoteRefs,
-              contentWidth
+              contentWidth,
+              {
+                styles: styles ?? undefined,
+                theme: _theme ?? null,
+                measureBlocks,
+              }
             );
 
             // Calculate per-page reserved heights
@@ -1937,6 +1695,34 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           // Step 4: Paint to DOM
           if (pagesContainerRef.current && painterRef.current) {
             stepStart = performance.now();
+            pendingScrollRestoreRef.current = null;
+            pendingIncrementalScrollSnapshotWrittenAtRef.current = 0;
+
+            const pagesEl = pagesContainerRef.current;
+            const scrollParent = getScrollContainer() ?? findVerticalScrollParentOrRoot(pagesEl);
+            let scrollRestoreRatioPre = 0;
+            let domAnchorPmStart: number | null = null;
+            let domAnchorOffsetInScroller = 0;
+            if (scrollParent?.isConnected) {
+              if (!scrollParent.style.overflowAnchor) {
+                scrollParent.style.setProperty('overflow-anchor', 'none');
+              }
+              const maxBefore = Math.max(1, scrollParent.scrollHeight - scrollParent.clientHeight);
+              scrollRestoreRatioPre = scrollParent.scrollTop / maxBefore;
+
+              const head = state.selection.head;
+              domAnchorPmStart = findPaintedPmStartAtOrBefore(pagesEl, head);
+              if (domAnchorPmStart != null) {
+                const anchorEl = findBodyPmAnchor(pagesEl, domAnchorPmStart);
+                if (anchorEl) {
+                  const ar = anchorEl.getBoundingClientRect();
+                  const sr = scrollParent.getBoundingClientRect();
+                  domAnchorOffsetInScroller = ar.top - sr.top;
+                } else {
+                  domAnchorPmStart = null;
+                }
+              }
+            }
 
             // Build block lookup
             const blockLookup: BlockLookup = new Map();
@@ -1955,7 +1741,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
               : undefined;
 
             // Render pages to container
-            renderPages(newLayout.pages, pagesContainerRef.current, {
+            const renderPagesKind = renderPages(newLayout.pages, pagesContainerRef.current, {
               pageGap,
               showShadow: true,
               pageBackground: '#fff',
@@ -1981,6 +1767,37 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
               footnotesByPage?: Map<number, FootnoteRenderItem[]>;
             });
 
+            const vp = viewportLayoutRef.current;
+            if (vp) {
+              const mh = viewportMinHeightPx(newLayout, pageGap);
+              vp.style.minHeight = `${mh}px`;
+              if (zoom !== 1) {
+                vp.style.marginBottom = `${mh * (zoom - 1)}px`;
+              } else {
+                vp.style.marginBottom = '';
+              }
+            }
+
+            if (scrollParent?.isConnected) {
+              let ratioForRestore = scrollRestoreRatioPre;
+              if (renderPagesKind === 'incremental') {
+                const maxPost = Math.max(1, scrollParent.scrollHeight - scrollParent.clientHeight);
+                ratioForRestore = scrollParent.scrollTop / maxPost;
+              }
+              const scrollTopSnapshot =
+                renderPagesKind === 'incremental' ? scrollParent.scrollTop : null;
+              pendingScrollRestoreRef.current = {
+                renderKind: renderPagesKind,
+                ratio: ratioForRestore,
+                scrollTopSnapshot,
+                domAnchorPmStart,
+                domAnchorOffsetInScroller,
+              };
+              if (renderPagesKind === 'incremental' && scrollTopSnapshot != null) {
+                pendingIncrementalScrollSnapshotWrittenAtRef.current = performance.now();
+              }
+            }
+
             stepTime = performance.now() - stepStart;
             if (stepTime > 500) {
               console.warn(`[PagedEditor] renderPages took ${Math.round(stepTime)}ms`);
@@ -1991,6 +1808,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
               const domContext = createRenderedDomContext(pagesContainerRef.current, zoom);
               onRenderedDomContextReady(domContext);
             }
+          } else {
+            pendingScrollRestoreRef.current = null;
+            pendingIncrementalScrollSnapshotWrittenAtRef.current = 0;
           }
 
           // Compute anchor Y positions for comments sidebar (works without DOM queries).
@@ -2006,6 +1826,8 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             onAnchorPositionsChange(positions);
           }
 
+          applyPendingIncrementalScrollSnapshot(false);
+
           const totalTime = performance.now() - pipelineStart;
           if (totalTime > 2000) {
             console.warn(
@@ -2019,12 +1841,16 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
         // Signal layout is complete for this sequence
         syncCoordinator.onLayoutComplete(currentEpoch);
+        applyPendingIncrementalScrollSnapshot(false);
       },
       [
         contentWidth,
         columns,
         pageSize,
         margins,
+        finalPageSize,
+        finalMargins,
+        finalColumns,
         pageGap,
         zoom,
         syncCoordinator,
@@ -2033,11 +1859,66 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         firstPageHeaderContent,
         firstPageFooterContent,
         sectionProperties,
+        finalSectionProperties,
         onRenderedDomContextReady,
         document,
         resolvedCommentIds,
+        getScrollContainer,
       ]
     );
+
+    // After `setLayout`, React still commits `totalHeight` / margin on the viewport wrapper.
+    // Restoring scroll here (plus one rAF) matches the committed DOM scrollHeight.
+    useLayoutEffect(() => {
+      const pending = pendingScrollRestoreRef.current;
+      if (!pending) return;
+      pendingScrollRestoreRef.current = null;
+      pendingIncrementalScrollSnapshotWrittenAtRef.current = 0;
+
+      const pagesEl = pagesContainerRef.current;
+      const scrollParent =
+        getScrollContainer() ?? (pagesEl ? findVerticalScrollParentOrRoot(pagesEl) : null);
+      if (!pagesEl || !scrollParent?.isConnected) return;
+
+      const { renderKind, ratio, scrollTopSnapshot, domAnchorPmStart, domAnchorOffsetInScroller } =
+        pending;
+
+      const applyRatio = () => {
+        const maxAfter = Math.max(1, scrollParent.scrollHeight - scrollParent.clientHeight);
+        scrollParent.scrollTop = ratio * maxAfter;
+      };
+
+      const applyIncrementalSnapshot = (): boolean => {
+        if (renderKind !== 'incremental' || scrollTopSnapshot == null) return false;
+        const maxAfter = Math.max(1, scrollParent.scrollHeight - scrollParent.clientHeight);
+        scrollParent.scrollTop = Math.min(Math.max(0, scrollTopSnapshot), maxAfter);
+        return true;
+      };
+
+      const applyScrollRestore = () => {
+        if (applyIncrementalSnapshot()) return;
+        if (renderKind !== 'incremental' && domAnchorPmStart != null) {
+          const el2 = findBodyPmAnchor(pagesEl, domAnchorPmStart);
+          if (el2) {
+            const sr = scrollParent.getBoundingClientRect();
+            const newOffset = el2.getBoundingClientRect().top - sr.top;
+            scrollParent.scrollTop += domAnchorOffsetInScroller - newOffset;
+            return;
+          }
+        }
+        applyRatio();
+      };
+
+      applyScrollRestore();
+      const rafId = requestAnimationFrame(() => {
+        // After unmount or another layout commit, scrollParent may be detached
+        // — writing scrollTop on a detached element silently no-ops, but is
+        // still a leaked frame's worth of work.
+        if (!scrollParent.isConnected) return;
+        applyScrollRestore();
+      });
+      return () => cancelAnimationFrame(rafId);
+    }, [layout, getScrollContainer]);
 
     // =========================================================================
     // Coalesced Layout (rAF throttle)
@@ -2047,8 +1928,6 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
      * Ref holding a pending requestAnimationFrame ID and the latest state.
      * Multiple rapid transactions (e.g. typing "hello") within the same frame
      * are coalesced so only the final state triggers a full layout pass.
-     *
-     * rafId = -1 means a debounce timer is pending (not a rAF yet).
      */
     const pendingLayoutRef = useRef<{
       rafId: number;
@@ -2056,89 +1935,35 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     } | null>(null);
 
     /**
-     * Debounce timer for typing-triggered layouts.
-     * Regular single-character edits wait this long after the last keystroke
-     * before running the (expensive) full layout pipeline. Paste / undo / redo
-     * and other bulk edits bypass this and schedule immediately via rAF.
-     *
-     * Why 150ms: layout takes ~80ms on a large document. Without debouncing,
-     * rapid typing triggers back-to-back layout cycles that block the main
-     * thread continuously (perf/issues.md §2). 150ms keeps pagination
-     * feeling live while allowing bursts of 10+ chars to coalesce.
-     */
-    const layoutDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const TYPING_LAYOUT_DEBOUNCE_MS = 150;
-
-    /**
      * Schedule a layout pipeline run for the next animation frame.
-     *
-     * @param state  The latest editor state to layout.
-     * @param debounce  When true (default for single-char typing), wait
-     *   TYPING_LAYOUT_DEBOUNCE_MS of inactivity before running. When false
-     *   (paste, undo, redo, multi-step ops), run immediately via rAF.
+     * If a run is already scheduled, the pending state is replaced so only
+     * the most recent document state gets laid out.
      */
     const scheduleLayout = useCallback(
-      (state: EditorState, debounce = false) => {
-        // Always store the latest state so the eventual layout uses current doc.
+      (state: EditorState) => {
         if (pendingLayoutRef.current) {
+          // Already scheduled — just update the state to the latest
           pendingLayoutRef.current.state = state;
+          return;
         }
-
-        if (debounce) {
-          // Typing path: coalesce keystrokes — run layout after idle pause.
-          if (layoutDebounceRef.current) {
-            clearTimeout(layoutDebounceRef.current);
+        const rafId = requestAnimationFrame(() => {
+          const pending = pendingLayoutRef.current;
+          pendingLayoutRef.current = null;
+          if (pending) {
+            runLayoutPipeline(pending.state);
           }
-          // Mark a pending layout with sentinel rafId=-1 so callers know
-          // a layout is coming even though no rAF has been registered yet.
-          if (!pendingLayoutRef.current) {
-            pendingLayoutRef.current = { rafId: -1, state };
-          }
-          layoutDebounceRef.current = setTimeout(() => {
-            layoutDebounceRef.current = null;
-            const pending = pendingLayoutRef.current;
-            if (!pending) return;
-            const rafId = requestAnimationFrame(() => {
-              const p = pendingLayoutRef.current;
-              pendingLayoutRef.current = null;
-              if (p) runLayoutPipeline(p.state);
-            });
-            pendingLayoutRef.current = { ...pending, rafId };
-          }, TYPING_LAYOUT_DEBOUNCE_MS);
-        } else {
-          // Immediate path (paste / undo / resize / etc.): original rAF behaviour.
-          // Cancel any pending debounce — the immediate layout supersedes it.
-          if (layoutDebounceRef.current) {
-            clearTimeout(layoutDebounceRef.current);
-            layoutDebounceRef.current = null;
-          }
-          if (pendingLayoutRef.current && pendingLayoutRef.current.rafId !== -1) {
-            // rAF already pending — state was updated above, nothing more to do.
-            return;
-          }
-          const rafId = requestAnimationFrame(() => {
-            const pending = pendingLayoutRef.current;
-            pendingLayoutRef.current = null;
-            if (pending) runLayoutPipeline(pending.state);
-          });
-          pendingLayoutRef.current = { rafId, state };
-        }
+        });
+        pendingLayoutRef.current = { rafId, state };
       },
       [runLayoutPipeline]
     );
 
-    // Clean up pending rAF and debounce timer on unmount
+    // Clean up pending rAF on unmount
     useEffect(() => {
       return () => {
         if (pendingLayoutRef.current) {
-          if (pendingLayoutRef.current.rafId !== -1) {
-            cancelAnimationFrame(pendingLayoutRef.current.rafId);
-          }
+          cancelAnimationFrame(pendingLayoutRef.current.rafId);
           pendingLayoutRef.current = null;
-        }
-        if (layoutDebounceRef.current) {
-          clearTimeout(layoutDebounceRef.current);
-          layoutDebounceRef.current = null;
         }
       };
     }, []);
@@ -2158,13 +1983,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
         const overlayRect = overlay.getBoundingClientRect();
 
-        // Find spans with PM position data
-        const spans = pagesContainerRef.current.querySelectorAll(
-          'span[data-pm-start][data-pm-end]'
-        );
+        const spans = findBodyPmSpans(pagesContainerRef.current);
 
-        for (const span of Array.from(spans)) {
-          const spanEl = span as HTMLElement;
+        for (const spanEl of spans) {
           const pmStart = Number(spanEl.dataset.pmStart);
           const pmEnd = Number(spanEl.dataset.pmEnd);
 
@@ -2188,17 +2009,13 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             continue; // Skip to next span
           }
 
-          // For text runs, use inclusive range.
-          // Hyperlink spans wrap their text in <a>, so also check span.firstChild.firstChild.
-          const spanTextNode: Text | null =
-            span.firstChild?.nodeType === Node.TEXT_NODE
-              ? (span.firstChild as Text)
-              : span.firstChild?.nodeName === 'A' &&
-                  span.firstChild.firstChild?.nodeType === Node.TEXT_NODE
-                ? (span.firstChild.firstChild as Text)
-                : null;
-          if (pmPos >= pmStart && pmPos <= pmEnd && spanTextNode) {
-            const textNode = spanTextNode;
+          // For text runs, use inclusive range
+          if (
+            pmPos >= pmStart &&
+            pmPos <= pmEnd &&
+            spanEl.firstChild?.nodeType === Node.TEXT_NODE
+          ) {
+            const textNode = spanEl.firstChild as Text;
             const charIndex = Math.min(pmPos - pmStart, textNode.length);
 
             // Create a range at the exact character position
@@ -2227,9 +2044,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           }
         }
 
-        // Fallback: try to find position in empty paragraphs (they have empty runs)
-        const emptyRuns = pagesContainerRef.current.querySelectorAll('.layout-empty-run');
-        for (const emptyRun of Array.from(emptyRuns)) {
+        // Fallback: try to find position in empty paragraphs (they have empty runs).
+        const emptyRuns = findBodyEmptyRuns(pagesContainerRef.current);
+        for (const emptyRun of emptyRuns) {
           const paragraph = emptyRun.closest('.layout-paragraph') as HTMLElement;
           if (!paragraph) continue;
 
@@ -2357,13 +2174,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             const overlayRect = overlay.getBoundingClientRect();
             const domRects: SelectionRect[] = [];
 
-            // Find spans that intersect with the selection range
-            const spans = pagesContainerRef.current.querySelectorAll(
-              'span[data-pm-start][data-pm-end]'
-            );
+            const spans = findBodyPmSpans(pagesContainerRef.current);
 
-            for (const span of Array.from(spans)) {
-              const spanEl = span as HTMLElement;
+            for (const spanEl of spans) {
               const pmStart = Number(spanEl.dataset.pmStart);
               const pmEnd = Number(spanEl.dataset.pmEnd);
 
@@ -2389,14 +2202,14 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
                 // Find the text node — may be a direct child or inside an <a> for hyperlinks
                 let textNode: Text | null = null;
-                if (span.firstChild?.nodeType === Node.TEXT_NODE) {
-                  textNode = span.firstChild as Text;
+                if (spanEl.firstChild?.nodeType === Node.TEXT_NODE) {
+                  textNode = spanEl.firstChild as Text;
                 } else if (
-                  span.firstChild?.nodeType === Node.ELEMENT_NODE &&
-                  (span.firstChild as HTMLElement).tagName === 'A' &&
-                  span.firstChild.firstChild?.nodeType === Node.TEXT_NODE
+                  spanEl.firstChild?.nodeType === Node.ELEMENT_NODE &&
+                  (spanEl.firstChild as HTMLElement).tagName === 'A' &&
+                  spanEl.firstChild.firstChild?.nodeType === Node.TEXT_NODE
                 ) {
-                  textNode = span.firstChild.firstChild as Text;
+                  textNode = spanEl.firstChild.firstChild as Text;
                 }
                 if (!textNode) continue;
                 const ownerDoc = spanEl.ownerDocument;
@@ -2480,16 +2293,8 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           // Increment state sequence to signal document changed
           syncCoordinator.incrementStateSeq();
 
-          // Debounce layout for single-character typing to prevent layout thrash
-          // on large documents (perf/issues.md §2).
-          // Paste, undo/redo, and multi-step programmatic edits run immediately
-          // so their result appears without perceptible delay.
-          const isPaste = !!transaction.getMeta('paste');
-          const isHistory = !!transaction.getMeta('history$');
-          const isBulkEdit = transaction.steps.length > 1;
-          const shouldDebounce = !isPaste && !isHistory && !isBulkEdit;
-
-          scheduleLayout(newState, shouldDebounce);
+          // Content changed - schedule layout (coalesced via rAF)
+          scheduleLayout(newState);
 
           // Notify document change - use ref to avoid infinite loops
           const newDoc = hiddenPMRef.current?.getDocument();
@@ -2543,9 +2348,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           const { selection: sel } = view.state;
           if (sel instanceof NodeSelection && sel.node.type.name === 'image') {
             const pmPos = sel.from;
-            const imgEl = pagesContainerRef.current?.querySelector(
-              `[data-pm-start="${pmPos}"]`
-            ) as HTMLElement | null;
+            const imgEl = pagesContainerRef.current
+              ? findBodyPmAnchor(pagesContainerRef.current, pmPos)
+              : null;
             if (imgEl) {
               setSelectedImageInfo(buildImageSelectionInfo(imgEl, pmPos));
               return;
@@ -2684,15 +2489,185 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       return null;
     }, []);
 
-    /** Scroll visible pages to a ProseMirror position */
-    const scrollToPositionImpl = useCallback((pmPos: number) => {
-      const pageContainer = pagesContainerRef.current;
-      if (!pageContainer) return;
-      const targetEl = pageContainer.querySelector(`[data-pm-start="${pmPos}"]`);
-      if (targetEl) {
-        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+    /**
+     * AbortController shared by every in-flight scroll's rAF chain. Aborted
+     * on unmount or whenever a new scroll request supersedes the previous
+     * one. Prevents writing scrollTop on a detached scroller, and prevents
+     * a stale paint-settle from clobbering a fresh user-initiated scroll.
+     */
+    const scrollAbortRef = useRef<AbortController | null>(null);
+
+    useEffect(() => {
+      return () => {
+        scrollAbortRef.current?.abort();
+        scrollAbortRef.current = null;
+      };
     }, []);
+
+    /**
+     * Scroll pages to a ProseMirror position (handles virtualization via page shells).
+     * @param forParaIdScroll — when true, use manual container scroll (reliable under CSS
+     *   transform / zoom). Otherwise use `scrollIntoView` (legacy behavior for outline,
+     *   bookmarks, etc.).
+     */
+    const scrollToPositionImpl = useCallback(
+      (pmPos: number, forParaIdScroll = false) => {
+        // Reject malformed input — pmPos must be a non-negative integer.
+        // Without this, a string or float would be interpolated into the
+        // [data-pm-start="..."] selector below and either crash with a
+        // SyntaxError or escape the attribute (selector injection).
+        if (!Number.isInteger(pmPos) || pmPos < 0) return;
+
+        const pages = pagesContainerRef.current;
+        if (!pages) return;
+
+        // Abort any in-flight scroll's rAF chain — its paint-settle would
+        // otherwise stomp on this fresh scroll target a few frames later.
+        scrollAbortRef.current?.abort();
+        const ac = new AbortController();
+        scrollAbortRef.current = ac;
+        const { signal } = ac;
+
+        const queryPaintedStartEl = (): HTMLElement | null => findBodyPmAnchor(pages, pmPos);
+
+        if (!forParaIdScroll) {
+          // Smooth scroll preserves the legacy UX for outline / bookmark /
+          // hyperlink / find-replace navigation. The paraId path uses an
+          // instant manual scroll instead because smooth fights the layout
+          // restore that runs during virtualized paint.
+          const smoothScroll: ScrollIntoViewOptions = {
+            block: 'center',
+            inline: 'nearest',
+            behavior: 'smooth',
+          };
+          const targetEl = queryPaintedStartEl();
+          if (targetEl) {
+            targetEl.scrollIntoView(smoothScroll);
+            return;
+          }
+          const lay = layout;
+          const blk = blocks;
+          const meas = measures;
+          if (!lay || blk.length === 0 || meas.length !== blk.length) return;
+
+          let pageIndex: number | null = null;
+          const caret = getCaretPosition(lay, blk, meas, pmPos);
+          if (caret) {
+            pageIndex = caret.pageIndex;
+          } else {
+            pageIndex = findPageIndexContainingPmPos(lay, pmPos);
+          }
+          if (pageIndex == null) return;
+
+          const pageShells = pages.querySelectorAll<HTMLElement>('.layout-page');
+          const shell = pageShells[pageIndex];
+          if (!shell) return;
+
+          shell.scrollIntoView(smoothScroll);
+          runAfterPaint(() => {
+            if (!pages.isConnected) return;
+            const painted = queryPaintedStartEl();
+            if (painted) painted.scrollIntoView(smoothScroll);
+          }, signal);
+          return;
+        }
+
+        const scroller = getScrollContainer() ?? findVerticalScrollParentOrRoot(pages);
+
+        const scrollPaintedTargetInstant = (): boolean => {
+          const targetEl = queryPaintedStartEl();
+          if (!targetEl) return false;
+          scrollElementCenterIntoContainer(targetEl, scroller, 'instant');
+          return true;
+        };
+
+        if (scrollPaintedTargetInstant()) return;
+
+        const lay = layout;
+        const blk = blocks;
+        const meas = measures;
+        if (!lay || blk.length === 0 || meas.length !== blk.length) return;
+
+        let pageIndex: number | null = null;
+        const caret = getCaretPosition(lay, blk, meas, pmPos);
+        if (caret) {
+          pageIndex = caret.pageIndex;
+        } else {
+          pageIndex = findPageIndexContainingPmPos(lay, pmPos);
+        }
+        if (pageIndex == null) return;
+
+        const pageShells = pages.querySelectorAll<HTMLElement>('.layout-page');
+        const shell = pageShells[pageIndex];
+        if (!shell) return;
+
+        // Long jump / virtualization: instant only — smooth fights layout/scroll restore.
+        scrollElementCenterIntoContainer(shell, scroller, 'instant');
+
+        runAfterPaint(() => {
+          if (!pages.isConnected) return;
+          const painted = queryPaintedStartEl();
+          if (painted) {
+            scrollElementCenterIntoContainer(painted, scroller, 'instant');
+          } else {
+            scrollPaintedTargetInstant();
+          }
+        }, signal);
+      },
+      [layout, blocks, measures, getScrollContainer]
+    );
+
+    // 1-indexed pageNumber. Prefers scrolling to the page's first PM-anchored
+    // fragment so virtualization is handled by scrollToPositionImpl. Falls
+    // back to the page shell directly when no fragment carries pmStart
+    // (e.g. a page containing only a continuation of a long paragraph or a
+    // floating image without a PM anchor).
+    const scrollToPageImpl = useCallback(
+      (pageNumber: number): void => {
+        if (!Number.isInteger(pageNumber) || pageNumber < 1) return;
+        if (!layout || pageNumber > layout.pages.length) return;
+        const page = layout.pages[pageNumber - 1];
+        for (const frag of page.fragments) {
+          if (typeof frag.pmStart === 'number') {
+            scrollToPositionImpl(frag.pmStart, true);
+            return;
+          }
+        }
+        const shell =
+          pagesContainerRef.current?.querySelectorAll<HTMLElement>('.layout-page')[pageNumber - 1];
+        shell?.scrollIntoView({ block: 'center', inline: 'nearest' });
+      },
+      [layout, scrollToPositionImpl]
+    );
+
+    const scrollToParaIdImpl = useCallback(
+      (paraId: string): boolean => {
+        const state = hiddenPMRef.current?.getState();
+        if (!state) return false;
+        const startPos = findStartPosForParaId(state.doc, paraId);
+        if (startPos == null || startPos < 0) return false;
+        scrollToPositionImpl(startPos, true);
+        // Defer selection/focus until after the scroll's paint-settle rAF
+        // chain runs. Setting selection synchronously on a virtualized
+        // (unpainted) target triggers a layout/scroll-restore cycle that
+        // fights the in-flight scroll. Reuses the same AbortController so
+        // a superseding scroll cancels this too.
+        const signal = scrollAbortRef.current?.signal;
+        if (!signal) return true;
+        const targetNode = state.doc.nodeAt(startPos);
+        const inner =
+          targetNode?.isTextblock === true
+            ? Math.min(startPos + 1 + targetNode.content.size, state.doc.content.size)
+            : Math.min(startPos + 1, state.doc.content.size);
+        runAfterPaint(() => {
+          if (!hiddenPMRef.current) return;
+          hiddenPMRef.current.setSelection(inner);
+          hiddenPMRef.current.focus();
+        }, signal);
+        return true;
+      },
+      [scrollToPositionImpl]
+    );
 
     /**
      * Handle mousedown on pages - start selection or drag.
@@ -3302,49 +3277,25 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         const pagesEl = pagesContainerRef.current;
         if (!pagesEl) return;
 
-        const mouseX = e.clientX;
-        const mouseY = e.clientY;
+        const hit = detectTableInsertHover({
+          mouseX: e.clientX,
+          mouseY: e.clientY,
+          pagesContainer: pagesEl,
+          target: e.target as HTMLElement,
+          hfEditMode: hfEditMode ?? null,
+        });
 
-        // Find the table — either directly under the cursor or nearby (for edge hover)
-        let tableEl = (e.target as HTMLElement).closest('.layout-table') as HTMLElement | null;
-        if (!tableEl) {
-          // Mouse may be in the margin area near a table — check all tables
-          const tables = pagesEl.querySelectorAll('.layout-table');
-          for (const t of Array.from(tables)) {
-            const r = t.getBoundingClientRect();
-            const nearLeft = mouseX >= r.left - TABLE_INSERT_EDGE_PROXIMITY && mouseX < r.left;
-            const nearTop = mouseY >= r.top - TABLE_INSERT_EDGE_PROXIMITY && mouseY < r.top;
-            const withinX = mouseX >= r.left - TABLE_INSERT_EDGE_PROXIMITY && mouseX <= r.right;
-            const withinY = mouseY >= r.top - TABLE_INSERT_EDGE_PROXIMITY && mouseY <= r.bottom;
-            if ((nearLeft && withinY) || (nearTop && withinX)) {
-              tableEl = t as HTMLElement;
-              break;
-            }
+        if (!hit) {
+          // Schedule a delayed hide so brief moves between cells don't flicker
+          // the button. The hit-test returns null for both "no nearby table"
+          // and "near table but not over a row/column"; both want the same
+          // delayed-hide UX.
+          if (!tableInsertHideTimerRef.current) {
+            tableInsertHideTimerRef.current = setTimeout(() => {
+              setTableInsertButton(null);
+              tableInsertHideTimerRef.current = null;
+            }, TABLE_INSERT_HIDE_DELAY);
           }
-        }
-
-        if (!tableEl) {
-          setTableInsertButton(null);
-          return;
-        }
-
-        const tableRect = tableEl.getBoundingClientRect();
-
-        const nearLeftEdge =
-          mouseX < tableRect.left + TABLE_INSERT_EDGE_PROXIMITY &&
-          mouseX >= tableRect.left - TABLE_INSERT_EDGE_PROXIMITY;
-        const nearTopEdge =
-          mouseY < tableRect.top + TABLE_INSERT_EDGE_PROXIMITY &&
-          mouseY >= tableRect.top - TABLE_INSERT_EDGE_PROXIMITY;
-
-        if (!nearLeftEdge && !nearTopEdge) {
-          setTableInsertButton(null);
-          return;
-        }
-
-        const rows = tableEl.querySelectorAll(':scope > .layout-table-row');
-        if (rows.length === 0) {
-          setTableInsertButton(null);
           return;
         }
 
@@ -3352,61 +3303,15 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         if (!viewportEl) return;
         const viewportRect = viewportEl.getBoundingClientRect();
 
-        /** Extract PM position from a cell element */
-        const getCellPmPos = (el: HTMLElement | null): number =>
-          el ? Number(el.dataset.pmStart) || 0 : 0;
-
-        // Show button centered on the hovered row (left edge hover)
-        if (nearLeftEdge) {
-          for (let i = 0; i < rows.length; i++) {
-            const rowRect = rows[i].getBoundingClientRect();
-            if (mouseY >= rowRect.top && mouseY <= rowRect.bottom) {
-              const cell = rows[i].querySelector('.layout-table-cell') as HTMLElement | null;
-              const pmPos = getCellPmPos(cell);
-              if (!pmPos) break;
-              const rowCenterY = rowRect.top + rowRect.height / 2;
-              setTableInsertButton({
-                type: 'row',
-                x: tableRect.left - viewportRect.left - 24,
-                y: rowCenterY - viewportRect.top - 10,
-                cellPmPos: pmPos,
-              });
-              clearTableInsertTimer();
-              return;
-            }
-          }
-        }
-
-        // Show button centered on the hovered column (top edge hover)
-        if (nearTopEdge) {
-          const cells = rows[0].querySelectorAll(':scope > .layout-table-cell');
-          for (let i = 0; i < cells.length; i++) {
-            const cellRect = cells[i].getBoundingClientRect();
-            if (mouseX >= cellRect.left && mouseX <= cellRect.right) {
-              const pmPos = getCellPmPos(cells[i] as HTMLElement);
-              if (!pmPos) break;
-              const cellCenterX = cellRect.left + cellRect.width / 2;
-              setTableInsertButton({
-                type: 'column',
-                x: cellCenterX - viewportRect.left - 10,
-                y: tableRect.top - viewportRect.top - 24,
-                cellPmPos: pmPos,
-              });
-              clearTableInsertTimer();
-              return;
-            }
-          }
-        }
-
-        // Not over any row/column — schedule hide with a small delay
-        if (!tableInsertHideTimerRef.current) {
-          tableInsertHideTimerRef.current = setTimeout(() => {
-            setTableInsertButton(null);
-            tableInsertHideTimerRef.current = null;
-          }, TABLE_INSERT_HIDE_DELAY);
-        }
+        setTableInsertButton({
+          type: hit.type,
+          x: hit.clientX - viewportRect.left,
+          y: hit.clientY - viewportRect.top,
+          cellPmPos: hit.cellPmPos,
+        });
+        clearTableInsertTimer();
       },
-      [readOnly, clearTableInsertTimer]
+      [readOnly, clearTableInsertTimer, hfEditMode]
     );
 
     /**
@@ -3572,6 +3477,11 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
     /**
      * Handle right-click on pages — set/preserve selection and show context menu.
+     *
+     * If the right-click target resolves to an image node (any of the three
+     * rendering paths — page-floating layer, block image container, or inline
+     * `<img>`), look up the underlying PM image node and pass its position +
+     * current wrap type to the host so an image-specific menu can take over.
      */
     const handlePagesContextMenu = useCallback(
       (e: React.MouseEvent) => {
@@ -3581,6 +3491,52 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
         const view = hiddenPMRef.current?.getView();
         if (!view) return;
+
+        // Try to detect an image right-click first.
+        //
+        // Two paths route here. The cheap one — clicking on a non-selected
+        // image — surfaces the image element as `e.target` and we walk up.
+        // The harder one is when PM already has a NodeSelection on the image
+        // (because the user clicked it once first): PM mounts a selection
+        // overlay that swallows pointer events, so `e.target` lands on the
+        // overlay, not on `.layout-page-floating-image` etc. Fall through to
+        // the current selection in that case.
+        type ImageInfo = {
+          pos: number;
+          wrapType: WrapType;
+          cssFloat?: 'left' | 'right' | 'none' | null;
+          inlinePositionEmu?: { horizontalEmu: number; verticalEmu: number };
+        };
+        const readImageNodeAt = (pos: number): ImageInfo | null => {
+          const node = view.state.doc.nodeAt(pos);
+          if (!node || node.type.name !== 'image') return null;
+          const wrapType = (node.attrs.wrapType as WrapType | undefined) ?? 'inline';
+          const cssFloat = node.attrs.cssFloat as ImageInfo['cssFloat'];
+          return { pos, wrapType, cssFloat };
+        };
+
+        let imageInfo: ImageInfo | null = null;
+        const hit = hitTestImage(e.target);
+        if (hit) {
+          imageInfo = readImageNodeAt(hit.pos);
+          if (imageInfo) {
+            imageInfo.inlinePositionEmu = captureInlinePositionEmu(hit.imageEl, zoom);
+          }
+        }
+        if (!imageInfo) {
+          const sel = view.state.selection;
+          if (sel instanceof NodeSelection && sel.node.type.name === 'image') {
+            imageInfo = readImageNodeAt(sel.from);
+            if (imageInfo) {
+              const inlineEl = pagesContainerRef.current?.querySelector(
+                `.layout-run-image[data-pm-start="${sel.from}"]`
+              ) as HTMLElement | null;
+              if (inlineEl) {
+                imageInfo.inlinePositionEmu = captureInlinePositionEmu(inlineEl, zoom);
+              }
+            }
+          }
+        }
 
         const { from, to } = view.state.selection;
         const pmPos = getPositionFromMouse(e.clientX, e.clientY);
@@ -3599,9 +3555,19 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           ? updatedState.selection.from !== updatedState.selection.to
           : false;
 
-        onContextMenu({ x: e.clientX, y: e.clientY, hasSelection });
+        onContextMenu({
+          x: e.clientX,
+          y: e.clientY,
+          hasSelection,
+          image: imageInfo,
+        });
       },
-      [onContextMenu, getPositionFromMouse]
+      // `zoom` is read inside `captureInlinePositionEmu` to convert post-
+      // transform px deltas back to authored space. Listing it explicitly
+      // even though `getPositionFromMouse` already invalidates on zoom — the
+      // dep is direct, not transitive, so it survives a refactor of the
+      // sibling closure.
+      [onContextMenu, getPositionFromMouse, zoom]
     );
 
     /**
@@ -3724,10 +3690,8 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             // Convert drop coordinates to content-area-relative pixels
             const dropX = (clientX - contentRect.left) / zoom;
             const dropY = (clientY - contentRect.top) / zoom;
-            // Pixels to EMU: px * 914400 / 96
-            const PIXELS_TO_EMU = 914400 / 96;
-            const hOffsetEmu = Math.round(dropX * PIXELS_TO_EMU);
-            const vOffsetEmu = Math.round(dropY * PIXELS_TO_EMU);
+            const hOffsetEmu = pixelsToEmu(dropX);
+            const vOffsetEmu = pixelsToEmu(dropY);
 
             const newPosition = {
               horizontal: { posOffset: hOffsetEmu, relativeTo: 'margin' },
@@ -3987,8 +3951,10 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           }
         },
         scrollToPosition: scrollToPositionImpl,
+        scrollToParaId: scrollToParaIdImpl,
+        scrollToPage: scrollToPageImpl,
       }),
-      [layout, runLayoutPipeline, scrollToPositionImpl]
+      [layout, runLayoutPipeline, scrollToPositionImpl, scrollToParaIdImpl, scrollToPageImpl]
     );
 
     // Update selection overlay when layout changes
@@ -4031,9 +3997,11 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             }
           },
           scrollToPosition: scrollToPositionImpl,
+          scrollToParaId: scrollToParaIdImpl,
+          scrollToPage: scrollToPageImpl,
         });
       }
-    }, [layout, runLayoutPipeline]);
+    }, [layout, runLayoutPipeline, scrollToParaIdImpl, scrollToPageImpl]);
     // NOTE: onReady removed from dependencies - accessed via ref to prevent infinite loops
 
     // =========================================================================
@@ -4044,8 +4012,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     const totalHeight = useMemo(() => {
       if (!layout) return DEFAULT_PAGE_HEIGHT + 48;
       const numPages = layout.pages.length;
-      return numPages * pageSize.h + (numPages - 1) * pageGap + 48;
-    }, [layout, pageSize.h, pageGap]);
+      const pagesHeight = layout.pages.reduce((sum, page) => sum + page.size.h, 0);
+      return pagesHeight + (numPages - 1) * pageGap + 48;
+    }, [layout, pageGap]);
 
     return (
       <div
@@ -4073,176 +4042,141 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           onKeyDown={handlePMKeyDown}
         />
 
-        {/*
-         * Layout unit — wraps the page viewport + sidebar overlay together.
-         *
-         * When the sidebar is open we give this div a real CSS min-width equal
-         * to (pageWidth×zoom + SIDEBAR_WIDTH + SIDEBAR_PAGE_GAP).  That makes
-         * the scroll container's scroll area wider than its visible area, so the
-         * browser creates a real horizontal scrollbar that lets the user pan
-         * between the page and the sidebar cards.
-         *
-         * Crucially this avoids the old translateX(-176px) approach which used
-         * a CSS transform — transforms are visual-only and do NOT expand the
-         * scroll area, so the page's left margin was simply clipped with no way
-         * to scroll back to it.
-         *
-         * With the wrapper approach the sidebar's absolute `left: calc(50% − 176px …)`
-         * formula works correctly because 50 % is now relative to the wrapper
-         * width (P + 352 px), and the algebra resolves to the sidebar sitting
-         * exactly 12 px to the right of the page's right edge.
-         */}
+        {/* Viewport for visible pages */}
         <div
+          ref={viewportLayoutRef}
           style={{
-            position: 'relative',
-            // flex-row ONLY when sidebar is open.  When closed the viewport
-            // stays block-level and fills the container, keeping the page
-            // centred as normal.
-            // When open, flex-row makes the viewport use its natural content
-            // width (pageSize.w) so the page remains centred in the VISIBLE
-            // area rather than in the wider wrapper.
-            display: commentsSidebarOpen ? 'flex' : undefined,
-            flexDirection: commentsSidebarOpen ? 'row' : undefined,
-            // min-width = page_visual_right + SIDEBAR_PAGE_GAP + SIDEBAR_WIDTH
-            //           = pageSize.w*(1+zoom)/2 + 12 + 340
-            // Matches the sidebar formula exactly so sidebar_right = wrapper_right.
-            minWidth: commentsSidebarOpen
-              ? `${(pageSize.w * (1 + zoom)) / 2 + SIDEBAR_PAGE_GAP + (sidebarWidthProp ?? SIDEBAR_WIDTH)}px`
-              : undefined,
-            backgroundColor: 'var(--doc-bg, #f8f9fa)',
+            ...viewportStyles,
+            minHeight: totalHeight,
+            // Negative margin at zoom<1 shrinks scroll area to match visual height;
+            // positive margin at zoom>1 grows it so content isn't clipped.
+            marginBottom: zoom !== 1 ? totalHeight * (zoom - 1) : undefined,
+            transform: (() => {
+              const parts: string[] = [];
+              if (commentsSidebarOpen) {
+                // Center page + sidebar as a unit within the container
+                parts.push(`translateX(-${SIDEBAR_DOCUMENT_SHIFT}px)`);
+              }
+              if (zoom !== 1) parts.push(`scale(${zoom})`);
+              return parts.length > 0 ? parts.join(' ') : undefined;
+            })(),
+            transformOrigin: 'top center',
+            transition: 'transform 0.2s ease',
           }}
         >
-          {/* Viewport for visible pages */}
+          {/* Pages container */}
           <div
-            style={{
-              ...viewportStyles,
-              minHeight: totalHeight,
-              // Negative margin at zoom<1 shrinks scroll area to match visual height;
-              // positive margin at zoom>1 grows it so content isn't clipped.
-              marginBottom: zoom !== 1 ? totalHeight * (zoom - 1) : undefined,
-              transform: zoom !== 1 ? `scale(${zoom})` : undefined,
-              transformOrigin: 'top center',
-              transition: 'transform 0.2s ease',
-            }}
-          >
-            {/* Pages container */}
-            <div
-              ref={pagesContainerRef}
-              className={`paged-editor__pages${readOnly ? ' paged-editor--readonly' : ''}${hfEditMode ? ` paged-editor--hf-editing paged-editor--editing-${hfEditMode}` : ''}`}
-              style={pagesContainerStyles}
-              onMouseDown={handlePagesMouseDown}
-              onMouseMove={handlePagesMouseMove}
-              onClick={handlePagesClick}
-              onContextMenu={handlePagesContextMenu}
-              aria-hidden="true" // Visual only, PM provides semantic content
-            />
+            ref={pagesContainerRef}
+            className={`paged-editor__pages${readOnly ? ' paged-editor--readonly' : ''}${hfEditMode ? ` paged-editor--hf-editing paged-editor--editing-${hfEditMode}` : ''}`}
+            style={pagesContainerStyles}
+            onMouseDown={handlePagesMouseDown}
+            onMouseMove={handlePagesMouseMove}
+            onClick={handlePagesClick}
+            onContextMenu={handlePagesContextMenu}
+            aria-hidden="true" // Visual only, PM provides semantic content
+          />
 
-            {/* Selection overlay */}
-            <SelectionOverlay
-              selectionRects={selectionRects}
-              caretPosition={caretPosition}
-              isFocused={isFocused}
-              pageGap={pageGap}
-              readOnly={readOnly}
-            />
+          {/* Selection overlay */}
+          <SelectionOverlay
+            selectionRects={selectionRects}
+            caretPosition={caretPosition}
+            isFocused={isFocused}
+            pageGap={pageGap}
+            readOnly={readOnly}
+          />
 
-            {/* Image selection overlay */}
-            <ImageSelectionOverlay
-              imageInfo={selectedImageInfo}
-              zoom={zoom}
-              isFocused={isFocused}
-              onResize={handleImageResize}
-              onResizeStart={handleImageResizeStart}
-              onResizeEnd={handleImageResizeEnd}
-              onDragMove={handleImageDragMove}
-              onDragStart={handleImageDragStart}
-              onDragEnd={handleImageDragEnd}
-            />
+          {/* Image selection overlay */}
+          <ImageSelectionOverlay
+            imageInfo={selectedImageInfo}
+            zoom={zoom}
+            isFocused={isFocused}
+            onResize={handleImageResize}
+            onResizeStart={handleImageResizeStart}
+            onResizeEnd={handleImageResizeEnd}
+            onDragMove={handleImageDragMove}
+            onDragStart={handleImageDragStart}
+            onDragEnd={handleImageDragEnd}
+            onContextMenu={handlePagesContextMenu}
+          />
 
-            {/* Table quick action insert button */}
-            {tableInsertButton && (
-              <button
-                type="button"
-                onMouseDown={handleTableInsertClick}
-                onMouseEnter={clearTableInsertTimer}
-                onMouseLeave={() => setTableInsertButton(null)}
-                style={{
-                  position: 'absolute',
-                  left: tableInsertButton.x,
-                  top: tableInsertButton.y,
-                  width: 20,
-                  height: 20,
-                  borderRadius: '4px',
-                  border: '1px solid #dadce0',
-                  backgroundColor: '#f8f9fa',
-                  color: '#5f6368',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  zIndex: 200,
-                  padding: 0,
-                  boxShadow: 'none',
-                }}
-                title={
-                  tableInsertButton.type === 'row'
-                    ? 'Insert row below'
-                    : 'Insert column to the right'
-                }
-                aria-label={
-                  tableInsertButton.type === 'row'
-                    ? 'Insert row below'
-                    : 'Insert column to the right'
-                }
-              >
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <path
-                    d="M6 1v10M1 6h10"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            )}
-
-            {/* Plugin overlays (highlights, annotations) */}
-            {pluginOverlays && (
-              <div className="paged-editor__plugin-overlays" style={pluginOverlaysStyles}>
-                {pluginOverlays}
-              </div>
-            )}
-
-            {/* Generic PM decoration forwarder — surfaces yCursorPlugin remote
-              cursors, search-highlight plugins, etc. on the visible pages.
-              No-op when no plugin emits decorations. */}
-            <DecorationLayer
-              getView={() => hiddenPMRef.current?.getView() ?? null}
-              getPagesContainer={() => pagesContainerRef.current}
-              zoom={zoom}
-              transactionVersion={transactionVersion}
-              syncCoordinator={syncCoordinator}
-            />
-          </div>
-
-          {/* Sidebar overlay — positioned to match visual document height, visible overflow for sidebar items */}
-          {sidebarOverlay && (
-            <div
+          {/* Table quick action insert button */}
+          {tableInsertButton && (
+            <button
+              type="button"
+              onMouseDown={handleTableInsertClick}
+              onMouseEnter={clearTableInsertTimer}
+              onMouseLeave={() => setTableInsertButton(null)}
               style={{
                 position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                height: totalHeight * zoom,
-                pointerEvents: 'none',
-                overflow: 'visible',
+                left: tableInsertButton.x,
+                top: tableInsertButton.y,
+                width: 20,
+                height: 20,
+                borderRadius: '4px',
+                border: '1px solid #dadce0',
+                backgroundColor: '#f8f9fa',
+                color: '#5f6368',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                zIndex: 200,
+                padding: 0,
+                boxShadow: 'none',
               }}
+              title={
+                tableInsertButton.type === 'row' ? 'Insert row below' : 'Insert column to the right'
+              }
+              aria-label={
+                tableInsertButton.type === 'row' ? 'Insert row below' : 'Insert column to the right'
+              }
             >
-              <div style={{ pointerEvents: 'auto' }}>{sidebarOverlay}</div>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path
+                  d="M6 1v10M1 6h10"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          )}
+
+          {/* Plugin overlays (highlights, annotations) */}
+          {pluginOverlays && (
+            <div className="paged-editor__plugin-overlays" style={pluginOverlaysStyles}>
+              {pluginOverlays}
             </div>
           )}
+
+          {/* Generic PM decoration forwarder — surfaces yCursorPlugin remote
+              cursors, search-highlight plugins, etc. on the visible pages.
+              No-op when no plugin emits decorations. */}
+          <DecorationLayer
+            getView={() => hiddenPMRef.current?.getView() ?? null}
+            getPagesContainer={() => pagesContainerRef.current}
+            zoom={zoom}
+            transactionVersion={transactionVersion}
+            syncCoordinator={syncCoordinator}
+          />
         </div>
-        {/* end layout unit */}
+
+        {/* Sidebar overlay — positioned to match visual document height, visible overflow for sidebar items */}
+        {sidebarOverlay && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: totalHeight * zoom,
+              pointerEvents: 'none',
+              overflow: 'visible',
+            }}
+          >
+            <div style={{ pointerEvents: 'auto' }}>{sidebarOverlay}</div>
+          </div>
+        )}
       </div>
     );
   }

@@ -50,6 +50,14 @@ function paragraphAttrsToDOMStyle(attrs: ParagraphAttrs): string {
   };
 
   const style = paragraphToStyle(formatting);
+  // Only the inline HF editor (`.hf-editor-pm`) reads these — it re-applies them
+  // as padding so table-cell paragraphs match the paged render. Inert elsewhere.
+  if (style.marginTop) {
+    style['--docx-space-before'] = style.marginTop;
+  }
+  if (style.marginBottom) {
+    style['--docx-space-after'] = style.marginBottom;
+  }
   return Object.entries(style)
     .map(([key, value]) => {
       const cssKey = key.replace(/([A-Z])/g, '-$1').toLowerCase();
@@ -255,6 +263,7 @@ const paragraphNodeSpec: NodeSpec = {
     spaceAfter: { default: null },
     lineSpacing: { default: null },
     lineSpacingRule: { default: null },
+    spacingExplicit: { default: null },
     indentLeft: { default: null },
     indentRight: { default: null },
     indentFirstLine: { default: null },
@@ -266,11 +275,16 @@ const paragraphNodeSpec: NodeSpec = {
     listMarkerHidden: { default: null },
     listMarkerFontFamily: { default: null },
     listMarkerFontSize: { default: null },
+    listLevelNumFmts: { default: null },
+    listAbstractNumId: { default: null },
+    listStartOverride: { default: null },
     styleId: { default: null },
     borders: { default: null },
     shading: { default: null },
     tabs: { default: null },
     pageBreakBefore: { default: null },
+    // `<w:lastRenderedPageBreak/>` — Word's cached layout marker.
+    renderedPageBreakBefore: { default: null },
     keepNext: { default: null },
     keepLines: { default: null },
     contextualSpacing: { default: null },

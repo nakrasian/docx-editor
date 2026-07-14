@@ -26,6 +26,7 @@ import { createNodeExtension, createExtension } from '../create';
 import type { ExtensionContext, ExtensionRuntime, AnyExtension } from '../types';
 import type { TableAttrs, TableRowAttrs, TableCellAttrs } from '../../schema/nodes';
 import type { ColorValue, BorderSpec } from '../../../types/colors';
+import { resolveColor } from '../../../utils/colorResolver';
 
 // ============================================================================
 // CSS PASTE HELPERS — Extract formatting from inline styles (Google Docs, etc.)
@@ -298,17 +299,13 @@ function buildCellBorderStyles(attrs: TableCellAttrs): string[] {
 
   if (!borders) return styles;
 
-  const borderToCss = (border?: {
-    style?: string;
-    size?: number;
-    color?: { rgb?: string };
-  }): string => {
+  const borderToCss = (border?: { style?: string; size?: number; color?: ColorValue }): string => {
     if (!border || !border.style || border.style === 'none' || border.style === 'nil') {
       return 'none';
     }
     const widthPx = border.size ? Math.max(1, Math.round((border.size / 8) * 1.333)) : 1;
     const cssStyle = BORDER_STYLE_CSS[border.style] || 'solid';
-    const color = border.color?.rgb ? `#${border.color.rgb}` : '#000000';
+    const color = resolveColor(border.color, undefined);
     return `${widthPx}px ${cssStyle} ${color}`;
   };
 
@@ -1049,7 +1046,9 @@ export const TablePluginExtension = createExtension({
       if (dispatch) {
         let tr = state.tr;
         const newColumnCount = (context.columnCount || 1) + 1;
-        const newColWidthPercent = Math.floor(100 / newColumnCount);
+        // Width is stored as 50ths of a percent per ECMA-376 §17.18.111
+        // (5000 = 100%) so resolveTableWidthPx can apply it directly.
+        const newColWidthPercent = Math.floor(5000 / newColumnCount);
         const rowStarts: number[] = [];
         let rowPos = context.tablePos + 1;
 
@@ -1141,7 +1140,9 @@ export const TablePluginExtension = createExtension({
       if (dispatch) {
         let tr = state.tr;
         const newColumnCount = (context.columnCount || 1) + 1;
-        const newColWidthPercent = Math.floor(100 / newColumnCount);
+        // Width is stored as 50ths of a percent per ECMA-376 §17.18.111
+        // (5000 = 100%) so resolveTableWidthPx can apply it directly.
+        const newColWidthPercent = Math.floor(5000 / newColumnCount);
         const rowStarts: number[] = [];
         let rowPos = context.tablePos + 1;
 
@@ -1235,7 +1236,9 @@ export const TablePluginExtension = createExtension({
       if (dispatch) {
         let tr = state.tr;
         const newColumnCount = (context.columnCount || 2) - 1;
-        const newColWidthPercent = Math.floor(100 / newColumnCount);
+        // Width is stored as 50ths of a percent per ECMA-376 §17.18.111
+        // (5000 = 100%) so resolveTableWidthPx can apply it directly.
+        const newColWidthPercent = Math.floor(5000 / newColumnCount);
 
         const deleteOps: { start: number; end: number }[] = [];
         let rowPos = context.tablePos + 1;

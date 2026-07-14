@@ -291,6 +291,23 @@ export function hashParagraphBlock(block: ParagraphBlock): string {
         `spacing:${attrs.spacing.before}|${attrs.spacing.after}|${attrs.spacing.line}|${attrs.spacing.lineRule}`
       );
     }
+    // Default font drives line height for empty paragraphs (no runs to hash).
+    // Without this, empty paragraphs collide regardless of font choice and the
+    // caret renders at the previously cached size until typing forces a re-key.
+    if (attrs.defaultFontSize != null) parts.push(`dfs:${attrs.defaultFontSize}`);
+    if (attrs.defaultFontFamily != null) parts.push(`dff:${attrs.defaultFontFamily}`);
+    // Borders affect measurement only via box-sizing in the renderer, but their
+    // presence on otherwise-identical empty paragraphs (e.g. one with a
+    // `<w:pBdr>` horizontal rule, one without) is a real authorial difference
+    // — fold them into the key so the two don't share a cache entry.
+    const b = attrs.borders;
+    if (b) {
+      const sig = (s?: { width?: number; style?: string; color?: string }) =>
+        s ? `${s.width ?? ''},${s.style ?? ''},${s.color ?? ''}` : '';
+      parts.push(`bdr:${sig(b.top)}|${sig(b.bottom)}|${sig(b.left)}|${sig(b.right)}`);
+    }
+    // Same for the trailing-empty-paragraph-after-table zero-height flag.
+    if (attrs.suppressEmptyParagraphHeight) parts.push('sup');
   }
 
   return parts.join('||');

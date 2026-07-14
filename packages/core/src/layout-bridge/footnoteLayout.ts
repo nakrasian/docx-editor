@@ -1,29 +1,43 @@
 /**
  * Footnote Layout Utilities
  *
- * Handles scanning for footnote references, mapping them to pages,
- * converting footnote content to measurable FlowBlocks, and computing
- * per-page footnote area heights for layout space reservation.
+ * Footnote/endnote rendering pipeline plus page-mapping helpers:
+ * - scanning FlowBlocks for footnote references and their PM positions
+ * - mapping references to the page that ends up containing them
+ * - converting a Footnote → FootnoteContent via the body pipeline
+ *   (footnoteToProseDoc → toFlowBlocks → caller-supplied measureBlocks)
+ * - reserving per-page footnote area heights for layout
+ *
+ * Everything that's pure OOXML / FlowBlock semantics lives here so the
+ * React, Vue, and any future adapters can share the conversion logic
+ * and just supply their own measurement function (which depends on
+ * platform-specific Canvas/font metrics).
  */
 
 import type {
   FlowBlock,
+  ParagraphBlock,
   Measure,
   Page,
-  ParagraphBlock,
-  Run,
-  TextRun,
-  RunFormatting,
   FootnoteContent,
 } from '../layout-engine/types';
-import type { Footnote } from '../types/document';
-import { measureParagraph } from './measuring';
+import type { Footnote, StyleDefinitions, Theme } from '../types/document';
+import { footnoteToProseDoc } from '../prosemirror/conversion/toProseDoc';
+import { toFlowBlocks } from './toFlowBlocks';
 
 /** Separator line height + padding in pixels */
 const SEPARATOR_HEIGHT = 12;
 
-/** Default footnote font size in points */
-const FOOTNOTE_FONT_SIZE = 8;
+/**
+ * Default footnote font size in points. Word's built-in "Footnote Text"
+ * style sets 8pt; we apply this only when the footnote's runs don't
+ * already specify a fontSize (avoids overriding authored sizes).
+ *
+ * TODO once the style cascade for paragraph styles is fully wired through
+ * the bridge, footnotes should pick this up from the resolved
+ * "FootnoteText" / "footnote text" style instead of hardcoding the value.
+ */
+const FOOTNOTE_FONT_SIZE_PT = 8;
 
 // ============================================================================
 // 1. Scan FlowBlocks for footnote references
@@ -97,118 +111,125 @@ export function mapFootnotesToPages(
 }
 
 // ============================================================================
-// 3. Convert footnote content to FlowBlocks + Measures
+// 3. Convert a footnote to renderable FlowBlocks (body-pipeline)
 // ============================================================================
 
 /**
- * Convert a Footnote's content paragraphs to FlowBlocks suitable for rendering.
- * Prepends the display number to the first run of the first paragraph.
+ * Footnote-specific block normalization. Mirrors the spirit of
+ * `normalizeHeaderFooterMeasureBlocks`: post-process the body-pipeline
+ * output for a single footnote so it carries the correct visual prefix
+ * (its display number, rendered as a superscript) and a default 8pt font
+ * for any run that didn't specify a size.
+ *
+ * The displayNumber is prepended onto the FIRST paragraph as a fresh
+ * superscript text run — visually matches Word's footnote numbering
+ * without disturbing the authored runs.
+ *
+ * Exported for callers that want to compose their own conversion
+ * pipeline; `convertFootnoteToContent` calls it as part of its flow.
+ */
+export function applyFootnotePresentation(blocks: FlowBlock[], displayNumber: number): FlowBlock[] {
+  if (blocks.length === 0) {
+    return [
+      {
+        kind: 'paragraph',
+        id: `fn-empty-${displayNumber}`,
+        runs: [
+          {
+            kind: 'text',
+            text: `${displayNumber}  `,
+            fontSize: FOOTNOTE_FONT_SIZE_PT,
+            superscript: true,
+          },
+        ],
+      } as ParagraphBlock,
+    ];
+  }
+
+  // Apply default 8pt to every run that didn't specify a fontSize. Mutating
+  // a copy keeps the input blocks pure for caching upstream.
+  const out = blocks.map((b) => {
+    if (b.kind !== 'paragraph') return b;
+    const para = b as ParagraphBlock;
+    return {
+      ...para,
+      runs: para.runs.map((r) => {
+        if (r.kind === 'text' || r.kind === 'tab') {
+          if (r.fontSize == null) {
+            return { ...r, fontSize: FOOTNOTE_FONT_SIZE_PT };
+          }
+        }
+        return r;
+      }),
+    } as ParagraphBlock;
+  });
+
+  // Prepend display number on the first paragraph.
+  const first = out[0];
+  if (first.kind === 'paragraph') {
+    const numberRun = {
+      kind: 'text' as const,
+      text: `${displayNumber}  `,
+      fontSize: FOOTNOTE_FONT_SIZE_PT,
+      superscript: true,
+    };
+    out[0] = {
+      ...(first as ParagraphBlock),
+      runs: [numberRun, ...(first as ParagraphBlock).runs],
+    } as ParagraphBlock;
+  }
+
+  return out;
+}
+
+/**
+ * Adapter-supplied block measurement function. The caller (React /
+ * Vue / etc.) supplies its platform's measure routine — at minimum
+ * paragraph + table + image + textBox — so this core helper stays
+ * Canvas-free.
+ */
+export type MeasureBlocksFn = (blocks: FlowBlock[], contentWidth: number) => Measure[];
+
+/**
+ * Options for {@link convertFootnoteToContent}.
+ */
+export type ConvertFootnoteOptions = {
+  /** The document's parsed style definitions, threaded into the body pipeline. */
+  styles?: StyleDefinitions | null;
+  /** Theme for resolving themed fills / fonts inside the footnote. */
+  theme?: Theme | null;
+  /** Measure callback supplied by the rendering adapter. */
+  measureBlocks: MeasureBlocksFn;
+};
+
+/**
+ * Convert a Footnote to renderable FootnoteContent via the body pipeline:
+ * `footnoteToProseDoc → toFlowBlocks → applyFootnotePresentation →
+ * measureBlocks`. Pre-PR (#378) this lived in a hand-rolled shadow stack
+ * that silently dropped non-paragraph content; routing through the body
+ * pipeline gives footnotes full block-kind support — paragraph + table
+ * + image + textBox + fields.
  */
 export function convertFootnoteToContent(
   footnote: Footnote,
   displayNumber: number,
-  contentWidth: number
+  contentWidth: number,
+  options: ConvertFootnoteOptions
 ): FootnoteContent {
-  const blocks: FlowBlock[] = [];
+  const pmDoc = footnoteToProseDoc(footnote.content, {
+    styles: options.styles ?? undefined,
+    theme: options.theme ?? null,
+  });
+  const rawBlocks = toFlowBlocks(pmDoc, { theme: options.theme ?? undefined });
+  const blocks = applyFootnotePresentation(rawBlocks, displayNumber);
 
-  for (let i = 0; i < footnote.content.length; i++) {
-    const para = footnote.content[i];
-    const runs: Run[] = [];
-
-    // For the first paragraph, prepend the footnote number
-    if (i === 0) {
-      const numberRun: TextRun = {
-        kind: 'text',
-        text: `${displayNumber}  `,
-        fontSize: FOOTNOTE_FONT_SIZE,
-        superscript: true,
-      };
-      runs.push(numberRun);
-    }
-
-    // Convert paragraph content to runs
-    for (const content of para.content) {
-      const contentObj = content as unknown as Record<string, unknown>;
-
-      if (contentObj.type === 'run' && Array.isArray(contentObj.content)) {
-        const formatting = contentObj.formatting as Record<string, unknown> | undefined;
-        const runFormatting: RunFormatting = {};
-
-        if (formatting) {
-          if (formatting.bold) runFormatting.bold = true;
-          if (formatting.italic) runFormatting.italic = true;
-          if (formatting.underline) runFormatting.underline = true;
-          if (formatting.strike) runFormatting.strike = true;
-          if (formatting.color) {
-            const color = formatting.color as Record<string, unknown>;
-            if (color.val) runFormatting.color = `#${color.val}`;
-            else if (color.rgb) runFormatting.color = `#${color.rgb}`;
-          }
-          if (formatting.fontSize) {
-            runFormatting.fontSize = (formatting.fontSize as number) / 2; // half-points to points
-          }
-          if (formatting.fontFamily) {
-            const ff = formatting.fontFamily as Record<string, unknown>;
-            runFormatting.fontFamily = (ff.ascii || ff.hAnsi) as string;
-          }
-        }
-
-        // If no fontSize specified, use footnote default
-        if (!runFormatting.fontSize) {
-          runFormatting.fontSize = FOOTNOTE_FONT_SIZE;
-        }
-
-        for (const rc of contentObj.content as unknown[]) {
-          const rcObj = rc as Record<string, unknown>;
-          if (rcObj.type === 'text' && typeof rcObj.text === 'string') {
-            runs.push({
-              kind: 'text',
-              text: rcObj.text,
-              ...runFormatting,
-            });
-          } else if (rcObj.type === 'tab') {
-            runs.push({ kind: 'tab', ...runFormatting });
-          } else if (rcObj.type === 'break') {
-            runs.push({ kind: 'lineBreak' });
-          } else if (rcObj.type === 'footnoteRef') {
-            // Self-reference marker - skip (we prepend the number ourselves)
-          }
-        }
-      }
-    }
-
-    // If no runs were generated, add an empty text run to ensure the paragraph renders
-    if (runs.length === 0) {
-      runs.push({ kind: 'text', text: '', fontSize: FOOTNOTE_FONT_SIZE });
-    }
-
-    const paragraphBlock: ParagraphBlock = {
-      kind: 'paragraph',
-      id: `fn-${footnote.id}-p${i}`,
-      runs,
-    };
-    blocks.push(paragraphBlock);
-  }
-
-  if (blocks.length === 0) {
-    blocks.push({
-      kind: 'paragraph',
-      id: `fn-${footnote.id}-empty`,
-      runs: [{ kind: 'text', text: '', fontSize: FOOTNOTE_FONT_SIZE }],
-    });
-  }
-
-  // Measure blocks
-  const measures: Measure[] = [];
-  for (const block of blocks) {
-    if (block.kind === 'paragraph') {
-      const m = measureParagraph(block, contentWidth);
-      measures.push(m);
-    }
-  }
+  const measures = options.measureBlocks(blocks, contentWidth);
 
   const totalHeight = measures.reduce((h, m) => {
     if (m.kind === 'paragraph') return h + m.totalHeight;
+    if (m.kind === 'table') return h + m.totalHeight;
+    if (m.kind === 'image') return h + m.height;
+    if (m.kind === 'textBox') return h + m.height;
     return h;
   }, 0);
 
@@ -221,18 +242,16 @@ export function convertFootnoteToContent(
   };
 }
 
-// ============================================================================
-// 4. Build per-page footnote content and reserved heights
-// ============================================================================
-
 /**
  * Build footnote content for all footnotes referenced in the document.
- * Returns a Map<footnoteId, FootnoteContent>.
+ * Display numbers are assigned by first-appearance order (the same way
+ * Word renders them).
  */
 export function buildFootnoteContentMap(
   footnotes: Footnote[],
   footnoteRefs: Array<{ footnoteId: number }>,
-  contentWidth: number
+  contentWidth: number,
+  options: ConvertFootnoteOptions
 ): Map<number, FootnoteContent> {
   const contentMap = new Map<number, FootnoteContent>();
   const footnoteById = new Map<number, Footnote>();
@@ -243,7 +262,6 @@ export function buildFootnoteContentMap(
     }
   }
 
-  // Assign display numbers in order of first appearance
   let displayNumber = 1;
   const seen = new Set<number>();
 
@@ -254,13 +272,19 @@ export function buildFootnoteContentMap(
     const footnote = footnoteById.get(ref.footnoteId);
     if (!footnote) continue;
 
-    const content = convertFootnoteToContent(footnote, displayNumber, contentWidth);
-    contentMap.set(ref.footnoteId, content);
+    contentMap.set(
+      ref.footnoteId,
+      convertFootnoteToContent(footnote, displayNumber, contentWidth, options)
+    );
     displayNumber++;
   }
 
   return contentMap;
 }
+
+// ============================================================================
+// 4. Per-page footnote area height reservation
+// ============================================================================
 
 /**
  * Calculate per-page footnote reserved heights.

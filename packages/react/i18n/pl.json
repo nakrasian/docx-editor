@@ -37,9 +37,11 @@
     "symbol": "Symbol",
     "help": "Pomoc",
     "reportIssue": "Zgłoś problem",
-    "clearFormatting": null,
-    "save": null,
-    "saveShortcut": null
+    "open": "Otwórz",
+    "openShortcut": "Ctrl+O",
+    "save": "Zapisz",
+    "saveShortcut": "Ctrl+S",
+    "clearFormatting": null
   },
   "formattingBar": {
     "groups": {
@@ -682,7 +684,22 @@
     "topAndBottom": "Góra i dół",
     "behindText": "Za tekstem",
     "inFrontOfText": "Przed tekstem",
-    "tooltipPrefix": "Zawijanie: {label}"
+    "tooltipPrefix": "Zawijanie: {label}",
+    "menu": {
+      "ariaLabel": "Opcje układu obrazu",
+      "behindText": "Za tekstem",
+      "inFrontOfText": "Przed tekstem",
+      "inLineWithText": "Równo z tekstem",
+      "squareLeft": "Kwadrat z lewej",
+      "squareRight": "Kwadrat z prawej"
+    },
+    "menuDesc": {
+      "behindText": "Obraz za tekstem",
+      "inFrontOfText": "Obraz przed tekstem",
+      "inLineWithText": "Obraz przepływa w linii jako glif",
+      "squareLeft": "Obraz po lewej, tekst zawija się po prawej",
+      "squareRight": "Obraz po prawej, tekst zawija się po lewej"
+    }
   },
   "responsePreview": {
     "loading": "{action}...",
@@ -758,5 +775,22 @@
   },
   "loading": {
     "label": "Ładowanie"
+  },
+  "agentPanel": {
+    "close": "Zamknij panel",
+    "composerPlaceholder": "Zapytaj asystenta…",
+    "defaultTitle": "Asystent",
+    "resizeHandle": "Zmień rozmiar panelu asystenta",
+    "send": "Wyślij",
+    "thinking": "Asystent myśli",
+    "timeline": {
+      "earlier": "+ {count, plural, one {# wcześniejszy krok} few {# wcześniejsze kroki} many {# wcześniejszych kroków} other {# wcześniejszych kroków}}",
+      "summary": "{count, plural, one {# krok} few {# kroki} many {# kroków} other {# kroków}}",
+      "working": "Pracuję… {count, plural, one {# krok} few {# kroki} many {# kroków} other {# kroków}}"
+    },
+    "toggle": "Otwórz asystenta"
+  },
+  "viewer": {
+    "pageIndicator": "{current} z {total}"
   }
 }

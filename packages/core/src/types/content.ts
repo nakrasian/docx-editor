@@ -10,6 +10,7 @@
  */
 
 import type { ColorValue, ThemeColorSlot, BorderSpec } from './colors';
+import type { WrapType } from '../docx/wrapTypes';
 import type {
   TextFormatting,
   ParagraphFormatting,
@@ -324,7 +325,7 @@ export interface ImageSize {
  * Image wrap type for floating images
  */
 export interface ImageWrap {
-  type: 'inline' | 'square' | 'tight' | 'through' | 'topAndBottom' | 'behind' | 'inFront';
+  type: WrapType;
   /** Wrap text direction */
   wrapText?: 'bothSides' | 'left' | 'right' | 'largest';
   /** Distance from text */
@@ -391,6 +392,20 @@ export interface ImagePadding {
 }
 
 /**
+ * Image crop, expressed as fractions of the source image to trim from each
+ * edge. OOXML's `<a:srcRect l="10000" t="0" r="5000" b="0"/>` uses units of
+ * 1/100000 (so 10000 → 0.1 → 10% trimmed from the left). We store the
+ * normalised fraction so both the renderer and the saver can read it
+ * directly without re-parsing units.
+ */
+export interface ImageCrop {
+  left?: number;
+  top?: number;
+  right?: number;
+  bottom?: number;
+}
+
+/**
  * Embedded image (w:drawing)
  */
 export interface Image {
@@ -421,8 +436,25 @@ export interface Image {
   transform?: ImageTransform;
   /** Padding around image */
   padding?: ImagePadding;
+  /** Source-image crop (fractional, OOXML `a:srcRect`). */
+  crop?: ImageCrop;
+  /** Opacity in [0, 1] (OOXML `a:alphaModFix amt`). Undefined = fully opaque. */
+  opacity?: number;
   /** Whether this is a decorative image */
   decorative?: boolean;
+  /**
+   * `wp:anchor layoutInCell` — when true (default), an anchored image inside
+   * a table cell is constrained to the cell. When false, the image escapes
+   * the cell into the page area. Round-tripped on save.
+   */
+  layoutInCell?: boolean;
+  /**
+   * `wp:anchor allowOverlap` — when true (default), anchored objects may
+   * overlap; when false, Word repositions them to avoid collisions. We
+   * don't currently reposition; we round-trip the flag so saving preserves
+   * the author's intent.
+   */
+  allowOverlap?: boolean;
   /** Hyperlink URL for clickable image */
   hlinkHref?: string;
   /** Image outline/border */
@@ -1159,6 +1191,8 @@ export interface Paragraph {
   content: ParagraphContent[];
   /** Computed list rendering (if this is a list item) */
   listRendering?: ListRendering;
+  /** Word's cached layout says this paragraph started on a new rendered page. */
+  renderedPageBreakBefore?: boolean;
   /** Section properties (if this paragraph ends a section) */
   sectionProperties?: SectionProperties;
 }
@@ -1244,8 +1278,14 @@ export interface Footnote {
   id: number;
   /** Special footnote type */
   noteType?: 'normal' | 'separator' | 'continuationSeparator' | 'continuationNotice';
-  /** Content */
-  content: Paragraph[];
+  /**
+   * Content. Per ECMA-376 §17.11.10 footnotes can hold the same blocks as
+   * the body — paragraphs and tables. The parser previously only collected
+   * <w:p> children which silently dropped any <w:tbl> inside a footnote;
+   * widened to match HeaderFooter / TableCell shape so the body pipeline
+   * (toProseDoc → toFlowBlocks) can render them uniformly.
+   */
+  content: (Paragraph | Table)[];
 }
 
 /**
@@ -1257,8 +1297,11 @@ export interface Endnote {
   id: number;
   /** Special endnote type */
   noteType?: 'normal' | 'separator' | 'continuationSeparator' | 'continuationNotice';
-  /** Content */
-  content: Paragraph[];
+  /**
+   * Content. Per ECMA-376 §17.11.4 endnotes can hold the same blocks as
+   * the body — paragraphs and tables. See note on `Footnote.content`.
+   */
+  content: (Paragraph | Table)[];
 }
 
 // ============================================================================

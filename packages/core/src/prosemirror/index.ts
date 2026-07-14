@@ -11,7 +11,14 @@
  */
 
 // Schema
-export { schema, singletonManager } from './schema';
+//
+// `schema` is the public re-export of the singleton ExtensionManager's
+// schema instance. The underlying `singletonManager` is intentionally
+// NOT re-exported here — extensions should reach their own manager via
+// `ExtensionContext.manager` (see prosemirror/extensions/types.ts), not
+// through a module-level global. Internal callers can still import the
+// singleton via the relative `./schema` path inside the package.
+export { schema } from './schema';
 export type {
   ParagraphAttrs,
   ImageAttrs,
@@ -23,7 +30,14 @@ export type {
 } from './schema';
 
 // Conversion
-export { toProseDoc, createEmptyDoc, fromProseDoc, updateDocumentContent } from './conversion';
+export {
+  toProseDoc,
+  createEmptyDoc,
+  fromProseDoc,
+  updateDocumentContent,
+  headerFooterToProseDoc,
+  footnoteToProseDoc,
+} from './conversion';
 export type { ToProseDocOptions } from './conversion';
 
 // Styles
@@ -142,3 +156,7 @@ export {
   generateTOC,
 } from './commands';
 export type { TableContextInfo, BorderPreset } from './commands';
+
+/** Word `w14:paraId` → ProseMirror position before matching paragraph. */
+export { findStartPosForParaId } from './utils/findStartPosForParaId';
+export { findParagraphByParaId } from './utils/findParagraphByParaId';

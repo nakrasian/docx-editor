@@ -152,6 +152,12 @@ function convertPMParagraph(node: PMNode, documentCounts?: TrackedChangeCounts):
     content,
   };
 
+  // Preserve `<w:lastRenderedPageBreak/>` so a save+reload doesn't silently
+  // drop the break Word recorded for paginating this paragraph.
+  if (attrs.renderedPageBreakBefore) {
+    paragraph.renderedPageBreakBefore = true;
+  }
+
   // Restore full section properties (round-trip) or fallback to break type only
   if (attrs._sectionProperties) {
     paragraph.sectionProperties =
@@ -801,13 +807,12 @@ function createImageRun(node: PMNode): Run {
 
   // Determine wrap type from attrs (default: inline)
   const wrapType = attrs.wrapType || 'inline';
-  const PX_TO_EMU = 914400 / 96;
 
   const wrap: import('../../types/content').ImageWrap = { type: wrapType };
-  if (attrs.distTop !== undefined) wrap.distT = Math.round(attrs.distTop * PX_TO_EMU);
-  if (attrs.distBottom !== undefined) wrap.distB = Math.round(attrs.distBottom * PX_TO_EMU);
-  if (attrs.distLeft !== undefined) wrap.distL = Math.round(attrs.distLeft * PX_TO_EMU);
-  if (attrs.distRight !== undefined) wrap.distR = Math.round(attrs.distRight * PX_TO_EMU);
+  if (attrs.distTop !== undefined) wrap.distT = pixelsToEmu(attrs.distTop);
+  if (attrs.distBottom !== undefined) wrap.distB = pixelsToEmu(attrs.distBottom);
+  if (attrs.distLeft !== undefined) wrap.distL = pixelsToEmu(attrs.distLeft);
+  if (attrs.distRight !== undefined) wrap.distR = pixelsToEmu(attrs.distRight);
 
   // Restore wrapText from PM attr
   if (attrs.wrapText) {
@@ -882,8 +887,7 @@ function createImageRun(node: PMNode): Run {
       outset: 'solid',
     };
     image.outline = {
-      // Convert pixels back to EMU (1 px = 914400/96 EMU)
-      width: Math.round(attrs.borderWidth * (914400 / 96)),
+      width: pixelsToEmu(attrs.borderWidth),
       color: attrs.borderColor ? { rgb: attrs.borderColor.replace('#', '') } : undefined,
       style: attrs.borderStyle
         ? (cssToOoxmlStyle[
@@ -896,6 +900,49 @@ function createImageRun(node: PMNode): Run {
   // Round-trip image hyperlink
   if (attrs.hlinkHref) {
     image.hlinkHref = attrs.hlinkHref;
+  }
+
+  // Round-trip wp:srcRect crop fractions
+  if (
+    attrs.cropTop !== undefined ||
+    attrs.cropRight !== undefined ||
+    attrs.cropBottom !== undefined ||
+    attrs.cropLeft !== undefined
+  ) {
+    const crop: import('../../types/content').ImageCrop = {};
+    if (attrs.cropTop !== undefined && attrs.cropTop !== null) crop.top = attrs.cropTop;
+    if (attrs.cropRight !== undefined && attrs.cropRight !== null) crop.right = attrs.cropRight;
+    if (attrs.cropBottom !== undefined && attrs.cropBottom !== null) crop.bottom = attrs.cropBottom;
+    if (attrs.cropLeft !== undefined && attrs.cropLeft !== null) crop.left = attrs.cropLeft;
+    if (Object.keys(crop).length > 0) image.crop = crop;
+  }
+
+  // Round-trip a:alphaModFix opacity
+  if (attrs.opacity !== undefined && attrs.opacity !== null && attrs.opacity < 1) {
+    image.opacity = attrs.opacity;
+  }
+
+  // Round-trip wp:anchor layoutInCell / allowOverlap (tri-state)
+  if (attrs.layoutInCell !== undefined && attrs.layoutInCell !== null) {
+    image.layoutInCell = attrs.layoutInCell;
+  }
+  if (attrs.allowOverlap !== undefined && attrs.allowOverlap !== null) {
+    image.allowOverlap = attrs.allowOverlap;
+  }
+
+  // Round-trip wp:effectExtent padding (px → EMU)
+  if (
+    attrs.effectExtentTop ||
+    attrs.effectExtentBottom ||
+    attrs.effectExtentLeft ||
+    attrs.effectExtentRight
+  ) {
+    const padding: import('../../types/content').ImagePadding = {};
+    if (attrs.effectExtentTop) padding.top = pixelsToEmu(attrs.effectExtentTop);
+    if (attrs.effectExtentBottom) padding.bottom = pixelsToEmu(attrs.effectExtentBottom);
+    if (attrs.effectExtentLeft) padding.left = pixelsToEmu(attrs.effectExtentLeft);
+    if (attrs.effectExtentRight) padding.right = pixelsToEmu(attrs.effectExtentRight);
+    if (Object.keys(padding).length > 0) image.padding = padding;
   }
 
   const drawingContent: DrawingContent = {
@@ -920,8 +967,8 @@ function createShapeRun(node: PMNode): Run {
     shapeType: (attrs.shapeType || 'rect') as Shape['shapeType'],
     id: attrs.shapeId || undefined,
     size: {
-      width: attrs.width ? Math.round(attrs.width * (914400 / 96)) : 0,
-      height: attrs.height ? Math.round(attrs.height * (914400 / 96)) : 0,
+      width: attrs.width ? pixelsToEmu(attrs.width) : 0,
+      height: attrs.height ? pixelsToEmu(attrs.height) : 0,
     },
   };
 
@@ -964,7 +1011,7 @@ function createShapeRun(node: PMNode): Run {
       dashed: 'dash',
     };
     shape.outline = {
-      width: Math.round(attrs.outlineWidth * (914400 / 96)),
+      width: pixelsToEmu(attrs.outlineWidth),
       color: attrs.outlineColor ? { rgb: attrs.outlineColor.replace('#', '') } : undefined,
       style: attrs.outlineStyle
         ? (cssToOoxml[attrs.outlineStyle] as import('../../types/content').ShapeOutline['style']) ||
@@ -1104,6 +1151,18 @@ function marksToTextFormatting(marks: readonly Mark[]): TextFormatting {
 
       case 'textOutline':
         formatting.outline = true;
+        break;
+
+      case 'hidden':
+        formatting.hidden = true;
+        break;
+
+      case 'rtl':
+        formatting.rtl = true;
+        break;
+
+      case 'textEffect':
+        formatting.effect = mark.attrs.effect || 'blinkBackground';
         break;
 
       // hyperlink is handled separately
@@ -1617,18 +1676,16 @@ function convertPMTextBox(node: PMNode): Paragraph {
     shapeType: 'rect',
     id: attrs.textBoxId || undefined,
     size: {
-      width: attrs.width ? Math.round(attrs.width * (914400 / 96)) : 0,
-      height: attrs.height ? Math.round(attrs.height * (914400 / 96)) : 0,
+      width: attrs.width ? pixelsToEmu(attrs.width) : 0,
+      height: attrs.height ? pixelsToEmu(attrs.height) : 0,
     },
     textBody: {
       content: childParagraphs.length > 0 ? childParagraphs : [{ type: 'paragraph', content: [] }],
       margins: {
-        top: attrs.marginTop != null ? Math.round(attrs.marginTop * (914400 / 96)) : undefined,
-        bottom:
-          attrs.marginBottom != null ? Math.round(attrs.marginBottom * (914400 / 96)) : undefined,
-        left: attrs.marginLeft != null ? Math.round(attrs.marginLeft * (914400 / 96)) : undefined,
-        right:
-          attrs.marginRight != null ? Math.round(attrs.marginRight * (914400 / 96)) : undefined,
+        top: attrs.marginTop != null ? pixelsToEmu(attrs.marginTop) : undefined,
+        bottom: attrs.marginBottom != null ? pixelsToEmu(attrs.marginBottom) : undefined,
+        left: attrs.marginLeft != null ? pixelsToEmu(attrs.marginLeft) : undefined,
+        right: attrs.marginRight != null ? pixelsToEmu(attrs.marginRight) : undefined,
       },
     },
   };
@@ -1649,7 +1706,7 @@ function convertPMTextBox(node: PMNode): Paragraph {
       dashed: 'dash',
     };
     shape.outline = {
-      width: Math.round(attrs.outlineWidth * (914400 / 96)),
+      width: pixelsToEmu(attrs.outlineWidth),
       color: attrs.outlineColor ? { rgb: attrs.outlineColor.replace('#', '') } : undefined,
       style: attrs.outlineStyle
         ? (cssToOoxmlOutline[

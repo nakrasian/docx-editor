@@ -6,7 +6,7 @@
  */
 
 import type { ClickPositionResolver } from './ClickPositionResolver';
-import { findWordBoundaries } from '@eigenpal/docx-core/utils/textSelection';
+import { findWordBoundaries } from '@eigenpal/docx-core/utils';
 
 /**
  * Interface for the editor that the handler controls.

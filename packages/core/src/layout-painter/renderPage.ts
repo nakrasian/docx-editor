@@ -28,13 +28,15 @@ import type {
 import { renderFragment } from './renderFragment';
 import { renderParagraphFragment } from './renderParagraph';
 import { renderTableFragment } from './renderTable';
-import { renderImageFragment } from './renderImage';
+import { renderImageFragment, applyImageVisualAttrs, hasImageVisualAttrs } from './renderImage';
 import { renderTextBoxFragment } from './renderTextBox';
 import type { BlockLookup } from './index';
 import type { BorderSpec } from '../types/document';
 import { borderToStyle } from '../utils/formatToStyle';
 import type { Theme } from '../types/document';
 import { measureParagraph, type FloatingImageZone } from '../layout-bridge/measuring';
+import { resolveFontFamily } from '../utils/fontResolver';
+import { isFloatingWrapType, isWrapNone, wrapsAroundText } from '../docx/wrapTypes';
 
 /**
  * Page-level floating image that has been extracted from paragraphs.
@@ -65,6 +67,31 @@ interface PageFloatingImage {
   wrapText?: 'bothSides' | 'left' | 'right' | 'largest';
   /** Wrap type (square, tight, through, topAndBottom) */
   wrapType?: string;
+  /** wp:srcRect crop fractions [0..1]. */
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
+  cropLeft?: number;
+  /** a:alphaModFix → opacity. */
+  opacity?: number;
+}
+
+/**
+ * Whether a floating image record reserves space in the text-wrap calculation.
+ * Operates on any record that carries `wrapType`; centralises the predicate so
+ * page-level and cell-level layers agree. Records reaching this predicate have
+ * already passed `isFloatingImageRun`, so `wrapType=undefined` implies a `cssFloat`-driven float
+ * — those wrap text by default.
+ *
+ * @internal
+ */
+export function floatingImageWrapsText(img: { wrapType?: string }): boolean {
+  return !isWrapNone(img.wrapType) && img.wrapType !== 'topAndBottom';
+}
+
+/** @internal */
+export function floatingImageIsBehindDoc(img: { wrapType?: string }): boolean {
+  return img.wrapType === 'behind';
 }
 
 /**
@@ -117,6 +144,15 @@ export interface RenderContext {
   insideTableCell?: boolean;
   /** Comment IDs that are resolved — skip highlight for these */
   resolvedCommentIds?: Set<number>;
+  /**
+   * How the renderer should position its outer element. The body lays
+   * fragments at absolute (x, y) on the page (`'absolute'`, the default),
+   * while headers/footers and text boxes flow blocks vertically and let
+   * normal document flow handle placement (`'flow'`). The caller passes
+   * 'flow' instead of overwriting the renderer's inline styles after the
+   * fact (#379).
+   */
+  positioning?: 'absolute' | 'flow';
 }
 
 /**
@@ -191,7 +227,7 @@ export interface RenderPageOptions {
   resolvedCommentIds?: Set<number>;
 }
 
-interface HeaderFooterLayoutInfo {
+export interface HeaderFooterLayoutInfo {
   flowTop: number;
   flowLeft: number;
   contentWidth: number;
@@ -220,9 +256,10 @@ function applyPageStyles(
   element.style.backgroundColor = options.backgroundColor ?? '#ffffff';
   element.style.overflow = 'hidden';
 
-  // Set default font styles (matches Word default: 11pt Calibri)
-  // Individual runs will override these with their own font settings
-  element.style.fontFamily = 'Calibri, "Segoe UI", Arial, sans-serif';
+  // Page-level default (11pt Calibri). Must use the same chain as canvas
+  // measurement in measureContainer.ts, otherwise unbreakable runs that lack
+  // an explicit fontFamily can overflow the page margin (#334).
+  element.style.fontFamily = resolveFontFamily('Calibri').cssFallback;
   // Use pixels to match Canvas-based measurements (11pt = 11 * 96/72 ≈ 14.67px)
   element.style.fontSize = `${(11 * 96) / 72}px`;
   element.style.color = '#000000';
@@ -385,6 +422,45 @@ function applyHeaderFooterFloatHorizontalPosition(
 }
 
 /**
+ * Resolve the (left, top) position for a floating table inside a header/
+ * footer container, per ECMA-376 §17.4.57. The table's `floating.tblpX/tblpY`
+ * are already in pixels (parser converted from twips); `horzAnchor`/
+ * `vertAnchor` decide whether the offset is relative to the page, the
+ * margins, or the surrounding text/column. Coordinates returned are
+ * relative to the HF container's flow origin (`layout.flowTop` /
+ * `layout.flowLeft`) so the caller can drop them straight into
+ * `style.top` / `style.left`.
+ */
+export function resolveHeaderFooterFloatingTablePosition(
+  floating: NonNullable<TableBlock['floating']>,
+  layout: HeaderFooterLayoutInfo
+): { left: number; top: number } {
+  // Vertical: tblpY relative to vertAnchor.
+  let top = floating.tblpY ?? 0;
+  if (floating.vertAnchor === 'page') {
+    top -= layout.flowTop;
+  } else if (floating.vertAnchor === 'margin') {
+    top += layout.margins.top - layout.flowTop;
+  }
+  // 'text' anchor (or unspecified) means offset from the surrounding
+  // paragraph — for HF that's the flow cursor, but tblpY for floating
+  // tables is typically authored relative to the page or margin. Treat
+  // an unspecified anchor as 'text' but with zero offset → leaves top
+  // at tblpY relative to container origin, which matches Word's
+  // observed behavior for HF floating tables.
+
+  // Horizontal: tblpX relative to horzAnchor.
+  let left = floating.tblpX ?? 0;
+  if (floating.horzAnchor === 'page') {
+    left -= layout.flowLeft;
+  } else if (floating.horzAnchor === 'margin') {
+    left += layout.margins.left - layout.flowLeft;
+  }
+
+  return { left, top };
+}
+
+/**
  * Apply fragment positioning styles
  * Note: Fragment x/y include page margins, but fragments are positioned
  * inside the content area which already has margin offsets applied.
@@ -418,20 +494,33 @@ export function emuToPixels(emu: number | undefined): number {
  * Check if an image run is a floating image (should be positioned at page level)
  */
 export function isFloatingImageRun(run: ImageRun): boolean {
-  const wrapType = run.wrapType;
-  const displayMode = run.displayMode;
-
-  // Floating images have specific wrap types that allow text to flow around them
-  if (wrapType && ['square', 'tight', 'through'].includes(wrapType)) {
-    return true;
-  }
-
+  if (isFloatingWrapType(run.wrapType)) return true;
   // Or explicit float display mode (but not topAndBottom — those are block images)
-  if (displayMode === 'float') {
-    return true;
-  }
+  return run.displayMode === 'float';
+}
 
-  return false;
+/**
+ * Check if a floating image should create text wrapping exclusion zones.
+ * wrapNone images (`behind` / `inFront`) are positioned floats but do not
+ * shrink line widths; text paints over or under them.
+ */
+export function isTextWrappingFloatingImageRun(run: ImageRun): boolean {
+  if (isWrapNone(run.wrapType) || run.wrapType === 'topAndBottom') return false;
+  if (wrapsAroundText(run.wrapType)) return true;
+  return run.displayMode === 'float' && run.cssFloat !== 'none';
+}
+
+/**
+ * Page geometry needed to translate OOXML `relativeFrom` anchors into
+ * painter coordinates. All values are in CSS pixels.
+ */
+interface PageGeometry {
+  pageWidth: number;
+  pageHeight: number;
+  marginLeft: number;
+  marginTop: number;
+  contentWidth: number;
+  contentHeight: number;
 }
 
 /**
@@ -441,7 +530,8 @@ export function isFloatingImageRun(run: ImageRun): boolean {
 function extractFloatingImagesFromParagraph(
   block: ParagraphBlock,
   fragmentY: number, // Y position of the paragraph fragment on the page (relative to content area)
-  contentWidth: number // Width of the content area
+  contentWidth: number, // Width of the content area
+  geometry?: PageGeometry
 ): PageFloatingImage[] {
   const floatingImages: PageFloatingImage[] = [];
 
@@ -458,59 +548,155 @@ function extractFloatingImagesFromParagraph(
     const distLeft = imgRun.distLeft ?? 12;
     const distRight = imgRun.distRight ?? 12;
 
-    // Determine horizontal position (left or right side)
+    // Determine horizontal position (left or right side). Mirror of the
+    // vertical logic — `relativeFrom` decides the anchor frame, then
+    // `align` (left/center/right) or `posOffset` chooses within it. Body
+    // images don't have margin pages or character frames, so for the
+    // `*Margin` and `character` / `line` variants we fall back to the
+    // content-area frame, which matches Word's render for single-column
+    // body documents.
     let side: 'left' | 'right' = 'left';
     let x = 0;
 
     if (position?.horizontal) {
       const h = position.horizontal;
+      // ECMA-376 §20.4.3.2 (ST_RelFromH). Same translation pattern as the
+      // vertical axis: pick a band origin (`baseX`) and a band width. For
+      // body text the painter's content origin is `marginLeft` from the page
+      // edge, so `relativeFrom="page"` is just `-marginLeft`.
+      const pageWidth = geometry?.pageWidth ?? 0;
+      const marginLeft = geometry?.marginLeft ?? 0;
+      const baseX = (() => {
+        switch (h.relativeTo) {
+          case 'page':
+          case 'leftMargin':
+            return -marginLeft;
+          case 'rightMargin':
+            return contentWidth;
+          case 'character':
+          case 'column':
+          case 'margin':
+          case 'insideMargin':
+          case 'outsideMargin':
+          default:
+            return 0;
+        }
+      })();
+      const bandWidth = (() => {
+        switch (h.relativeTo) {
+          case 'page':
+            return pageWidth;
+          case 'leftMargin':
+          case 'rightMargin':
+            return marginLeft;
+          case 'character':
+            return 0;
+          case 'column':
+          case 'margin':
+          case 'insideMargin':
+          case 'outsideMargin':
+          default:
+            return contentWidth;
+        }
+      })();
       if (h.align === 'right') {
         side = 'right';
-        // Position from right edge of content
-        x = contentWidth - imgRun.width;
+        x = bandWidth ? baseX + bandWidth - imgRun.width : 0;
       } else if (h.align === 'left') {
         side = 'left';
-        x = 0;
+        x = baseX;
       } else if (h.align === 'center') {
-        side = 'left'; // Treat centered as left-aligned for simplicity
-        x = (contentWidth - imgRun.width) / 2;
+        side = 'left';
+        x = bandWidth ? baseX + (bandWidth - imgRun.width) / 2 : 0;
       } else if (h.posOffset !== undefined) {
-        // Explicit offset from margin
-        x = emuToPixels(h.posOffset);
+        x = baseX + emuToPixels(h.posOffset);
         side = x > contentWidth / 2 ? 'right' : 'left';
+      } else {
+        // Bare positionH (no align, no offset) — anchor at band origin.
+        x = baseX;
       }
     } else if (imgRun.cssFloat === 'right') {
       side = 'right';
       x = contentWidth - imgRun.width;
     }
 
-    // Determine vertical position
+    // Determine vertical position. The OOXML attribute can be either an
+    // explicit `posOffset` (EMUs from the relativeFrom origin) or a symbolic
+    // `align` (top / center / bottom). When neither is present, fall back
+    // to the paragraph anchor — that's Word's default for `wp:anchor` with
+    // a bare `<wp:positionV>`.
+    //
+    // `relativeFrom` decides which anchor coordinate offset/align is
+    // computed against. We translate every variant into the painter's
+    // coordinate space (content-area top = 0).
     let y = 0;
 
     if (position?.vertical) {
       const v = position.vertical;
+      const pageHeight = geometry?.pageHeight ?? 0;
+      const marginTop = geometry?.marginTop ?? 0;
+      const contentHeight = geometry?.contentHeight ?? 0;
+      // ECMA-376 §20.4.3.1 (ST_RelFromV) — translate the OOXML anchor band
+      // into the painter's coordinate space (content-area top = 0). `topMargin`
+      // is the strip ABOVE the content area (negative offset); `bottomMargin`
+      // is BELOW (`contentHeight`). `margin` is the content area itself.
+      // `insideMargin`/`outsideMargin` are mirror-margins for facing pages —
+      // we approximate as `margin`, which matches single-sided layouts.
+      const baseY = (() => {
+        switch (v.relativeTo) {
+          case 'paragraph':
+          case 'line':
+            return fragmentY;
+          case 'page':
+            return -marginTop;
+          case 'topMargin':
+            return -marginTop;
+          case 'bottomMargin':
+            return contentHeight;
+          case 'margin':
+          case 'insideMargin':
+          case 'outsideMargin':
+          default:
+            return 0;
+        }
+      })();
+      // The "band height" within which align="center"/"bottom" is computed.
+      // page → page height; topMargin → marginTop; bottomMargin → bottom margin
+      // (which we don't track separately, fall back to marginTop ≈ symmetric
+      // pages); paragraph/line → no band (fall back to paragraph anchor).
+      const bandHeight = (() => {
+        switch (v.relativeTo) {
+          case 'page':
+            return pageHeight;
+          case 'topMargin':
+          case 'bottomMargin':
+            return marginTop;
+          case 'paragraph':
+          case 'line':
+            return 0;
+          case 'margin':
+          case 'insideMargin':
+          case 'outsideMargin':
+          default:
+            return contentHeight;
+        }
+      })();
       if (v.align === 'top') {
-        // Align to top of margin area
-        y = 0;
+        y = baseY;
+      } else if (v.align === 'center') {
+        y = bandHeight ? baseY + (bandHeight - imgRun.height) / 2 : fragmentY;
       } else if (v.align === 'bottom') {
-        // Would need page height - not supported, use paragraph position
-        y = fragmentY;
+        y = bandHeight ? baseY + bandHeight - imgRun.height : fragmentY;
       } else if (v.posOffset !== undefined) {
-        y = emuToPixels(v.posOffset);
+        y = baseY + emuToPixels(v.posOffset);
       } else {
-        // Default to paragraph position
-        y = fragmentY;
-      }
-
-      // Check relativeTo for positioning context
-      if (v.relativeTo === 'margin' && (v.align === 'top' || v.posOffset !== undefined)) {
-        // Already in content-relative coordinates (margin = content area)
-      } else if (v.relativeTo === 'paragraph') {
-        // Add fragment Y offset
-        y = fragmentY + y;
+        // Bare positionV (no align, no offset). For paragraph/line bands the
+        // image stays in flow; for any other band, the spec means "anchor at
+        // the band origin", which is `baseY`.
+        y = v.relativeTo === 'paragraph' || v.relativeTo === 'line' ? fragmentY : baseY;
       }
     } else {
-      // Default: position at paragraph
+      // No positionV at all — default to paragraph anchor.
       y = fragmentY;
     }
 
@@ -542,6 +728,11 @@ function extractFloatingImagesFromParagraph(
       pmEnd: imgRun.pmEnd,
       wrapText,
       wrapType: imgRun.wrapType,
+      cropTop: imgRun.cropTop,
+      cropRight: imgRun.cropRight,
+      cropBottom: imgRun.cropBottom,
+      cropLeft: imgRun.cropLeft,
+      opacity: imgRun.opacity,
     });
   }
 
@@ -595,27 +786,77 @@ function rectsToFloatingZones(
 }
 
 /**
- * Render floating images into a page-level layer
+ * Minimum fields the floating-image painter needs. Page-level and cell-level
+ * float records both satisfy this shape.
+ *
+ * @internal
  */
-function renderFloatingImagesLayer(
-  floatingImages: PageFloatingImage[],
-  doc: Document
+export interface FloatingImagePaintRecord {
+  src: string;
+  width: number;
+  height: number;
+  alt?: string;
+  transform?: string;
+  x: number;
+  y: number;
+  pmStart?: number;
+  pmEnd?: number;
+  /** wp:srcRect crop fractions in [0, 1]. */
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
+  cropLeft?: number;
+  /** a:alphaModFix → CSS opacity. */
+  opacity?: number;
+}
+
+/** @internal */
+export interface FloatingImagesLayerOptions {
+  layerClass: string;
+  itemClass: string;
+  /**
+   * `inset0` sizes the layer with `top/right/bottom/left = 0` (used at page level).
+   * `fullSize` uses `width/height = 100%` and adds `overflow: hidden` (used inside table cells).
+   */
+  sizing: 'inset0' | 'fullSize';
+  /** `behind` skips z-index so DOM order keeps the layer below body fragments. */
+  layerMode: 'front' | 'behind';
+}
+
+/**
+ * Render a layer of positioned floating images. Used at both page level and
+ * inside table cells; the variant differs only in class names and sizing.
+ *
+ * @internal
+ */
+export function renderFloatingImagesLayer(
+  floatingImages: FloatingImagePaintRecord[],
+  doc: Document,
+  options: FloatingImagesLayerOptions
 ): HTMLElement {
   const layer = doc.createElement('div');
-  layer.className = 'layout-floating-images-layer';
+  layer.className = options.layerClass;
   layer.style.position = 'absolute';
   layer.style.top = '0';
   layer.style.left = '0';
-  layer.style.right = '0';
-  layer.style.bottom = '0';
-  layer.style.pointerEvents = 'none'; // Allow clicks to pass through
-  layer.style.zIndex = '10';
+  if (options.sizing === 'inset0') {
+    layer.style.right = '0';
+    layer.style.bottom = '0';
+  } else {
+    layer.style.width = '100%';
+    layer.style.height = '100%';
+    layer.style.overflow = 'hidden';
+  }
+  layer.style.pointerEvents = 'none';
+  if (options.layerMode === 'front') {
+    layer.style.zIndex = '10';
+  }
 
   for (const floatImg of floatingImages) {
     const container = doc.createElement('div');
-    container.className = 'layout-page-floating-image';
+    container.className = options.itemClass;
     container.style.position = 'absolute';
-    container.style.pointerEvents = 'auto'; // Make images clickable
+    container.style.pointerEvents = 'auto';
     container.style.top = `${floatImg.y}px`;
     container.style.left = `${floatImg.x}px`;
     if (floatImg.pmStart !== undefined) container.dataset.pmStart = String(floatImg.pmStart);
@@ -627,7 +868,11 @@ function renderFloatingImagesLayer(
     img.style.height = `${floatImg.height}px`;
     img.style.display = 'block';
     if (floatImg.alt) img.alt = floatImg.alt;
-    if (floatImg.transform) img.style.transform = floatImg.transform;
+    if (floatImg.transform) {
+      img.style.transform = floatImg.transform;
+      img.style.transformOrigin = 'center center';
+    }
+    if (hasImageVisualAttrs(floatImg)) applyImageVisualAttrs(img, floatImg);
 
     container.appendChild(img);
     layer.appendChild(container);
@@ -680,10 +925,12 @@ function renderHeaderFooterContent(
   for (let i = 0; i < content.blocks.length; i++) {
     const block = content.blocks[i];
     const measure = content.measures[i];
+    if (!block || !measure) continue;
 
-    if (block?.kind === 'paragraph' && measure?.kind === 'paragraph') {
+    if (block.kind === 'paragraph' && measure.kind === 'paragraph') {
       const paragraphBlock = block as ParagraphBlock;
       const paragraphMeasure = measure as ParagraphMeasure;
+      const paragraphSpacingBefore = paragraphBlock.attrs?.spacing?.before ?? 0;
 
       // Track the Y position where this paragraph starts
       const paragraphStartY = cursorY;
@@ -738,28 +985,74 @@ function renderHeaderFooterContent(
         kind: 'paragraph',
         blockId: paragraphBlock.id,
         x: 0,
-        y: cursorY,
+        y: cursorY + paragraphSpacingBefore,
         width: contentWidth,
         height: paragraphMeasure.totalHeight,
         fromLine: 0,
         toLine: paragraphMeasure.lines.length,
       };
 
-      // Render paragraph fragment (with floating images filtered out)
+      // Render paragraph fragment (with floating images filtered out). The
+      // HF context positions blocks absolutely within its own container,
+      // stacking vertically via `cursorY` — `paragraphMeasure.totalHeight`
+      // already includes `spaceBefore` / `spaceAfter`. Pass `positioning:
+      // 'absolute'` so the renderer applies that mode itself instead of the
+      // caller having to flip its inline style after the fact (#379).
       const fragEl = renderParagraphFragment(
         syntheticFragment,
         inlineBlock,
         paragraphMeasure,
-        context,
+        { ...context, positioning: 'absolute' },
         { document: doc }
       );
 
-      // Position the fragment
-      fragEl.style.position = 'relative';
-      fragEl.style.marginBottom = '0';
+      fragEl.style.top = `${cursorY + paragraphSpacingBefore}px`;
+      fragEl.style.left = '0';
+      fragEl.style.width = `${contentWidth}px`;
 
       containerEl.appendChild(fragEl);
       cursorY += paragraphMeasure.totalHeight;
+    } else if (block.kind === 'table' && measure.kind === 'table') {
+      // HF tables don't paginate, so the synthetic fragment covers all rows.
+      const syntheticFragment: TableFragment = {
+        kind: 'table',
+        blockId: block.id,
+        x: 0,
+        y: cursorY,
+        width: measure.totalWidth,
+        height: measure.totalHeight,
+        fromRow: 0,
+        toRow: measure.rows.length,
+        pmStart: block.pmStart,
+        pmEnd: block.pmEnd,
+      };
+      const fragEl = renderTableFragment(
+        syntheticFragment,
+        block,
+        measure,
+        { ...context, positioning: 'absolute' },
+        { document: doc }
+      );
+
+      // Floating tables (`<w:tblpPr>`) opt out of the cursorY flow. They
+      // anchor at (tblpX, tblpY) relative to the page/margin/column per
+      // ECMA-376 §17.4.57 and don't advance cursorY (#382). Inline tables
+      // keep their cursorY-based stacking.
+      if (block.floating) {
+        const { left, top } = resolveHeaderFooterFloatingTablePosition(block.floating, layout);
+        fragEl.style.top = `${top}px`;
+        fragEl.style.left = `${left}px`;
+        containerEl.appendChild(fragEl);
+        // Floating tables do NOT advance cursorY — surrounding HF blocks
+        // flow as if the table weren't there. Word renders text behind
+        // floating tables when no wrap behavior is requested; we match.
+      } else {
+        // Inline placement: top/left stack within the HF container at cursorY.
+        fragEl.style.top = `${cursorY}px`;
+        fragEl.style.left = '0';
+        containerEl.appendChild(fragEl);
+        cursorY += measure.totalHeight;
+      }
     }
   }
 
@@ -879,7 +1172,15 @@ export function renderPage(
         const extracted = extractFloatingImagesFromParagraph(
           paragraphBlock,
           contentRelativeY,
-          contentWidth
+          contentWidth,
+          {
+            pageWidth: page.size.w,
+            pageHeight: page.size.h,
+            marginLeft: page.margins.left,
+            marginTop: page.margins.top,
+            contentWidth,
+            contentHeight: page.size.h - page.margins.top - page.margins.bottom,
+          }
         );
         allFloatingImages.push(...extracted);
 
@@ -891,6 +1192,8 @@ export function renderPage(
 
   // Collect floating image exclusion rectangles
   for (const img of allFloatingImages) {
+    if (!floatingImageWrapsText(img)) continue;
+
     floatingRects.push({
       side: img.side,
       x: img.x,
@@ -944,9 +1247,16 @@ export function renderPage(
   const floatingZones: FloatingImageZone[] =
     floatingRects.length > 0 ? rectsToFloatingZones(floatingRects, contentWidth) : [];
 
-  // PHASE 3: Render floating images in a page-level layer
-  if (allFloatingImages.length > 0) {
-    const floatingLayer = renderFloatingImagesLayer(allFloatingImages, doc);
+  // PHASE 3: Render behind-text floating images before text fragments.
+  const behindFloatingImages = allFloatingImages.filter(floatingImageIsBehindDoc);
+  const frontFloatingImages = allFloatingImages.filter((img) => !floatingImageIsBehindDoc(img));
+  if (behindFloatingImages.length > 0) {
+    const floatingLayer = renderFloatingImagesLayer(behindFloatingImages, doc, {
+      layerClass: 'layout-floating-images-layer',
+      itemClass: 'layout-page-floating-image',
+      sizing: 'inset0',
+      layerMode: 'behind',
+    });
     contentEl.appendChild(floatingLayer);
   }
 
@@ -1065,6 +1375,18 @@ export function renderPage(
 
     applyFragmentStyles(fragmentEl, fragment, { left: page.margins.left, top: page.margins.top });
     contentEl.appendChild(fragmentEl);
+  }
+
+  // Render in-front floating images after text fragments so wrapNone and
+  // wrapping images paint above body text without participating in flow.
+  if (frontFloatingImages.length > 0) {
+    const floatingLayer = renderFloatingImagesLayer(frontFloatingImages, doc, {
+      layerClass: 'layout-floating-images-layer',
+      itemClass: 'layout-page-floating-image',
+      sizing: 'inset0',
+      layerMode: 'front',
+    });
+    contentEl.appendChild(floatingLayer);
   }
 
   // Render column separator lines between columns (when w:sep is set)
@@ -1394,6 +1716,8 @@ const VIRTUALIZATION_THRESHOLD = 8;
  * An IntersectionObserver watches page elements and populates/clears
  * content as pages scroll into and out of view.
  */
+export type RenderPagesUpdateKind = 'incremental' | 'full';
+
 export function renderPages(
   pages: Page[],
   container: HTMLElement,
@@ -1401,7 +1725,7 @@ export function renderPages(
     pageGap?: number;
     footnotesByPage?: Map<number, FootnoteRenderItem[]>;
   } = {}
-): void {
+): RenderPagesUpdateKind {
   const totalPages = pages.length;
   const pageGap = options.pageGap ?? 24;
   const pc = container as PageContainer;
@@ -1513,7 +1837,7 @@ export function renderPages(
     prevState.totalPages = totalPages;
     prevState.currentOptions = options;
 
-    return;
+    return 'incremental';
   }
 
   // --- FULL REBUILD PATH ---
@@ -1561,7 +1885,7 @@ export function renderPages(
   if (!useVirtualization) {
     // Store state for potential future incremental updates (won't be used
     // since small docs skip the incremental path, but keeps data consistent)
-    return;
+    return 'full';
   }
 
   // --- Virtualization via IntersectionObserver ---
@@ -1667,6 +1991,8 @@ export function renderPages(
   for (let i = 0; i < initialRenderCount; i++) {
     populatePageShell(pageShells[i], pageDataMap, totalPages, options);
   }
+
+  return 'full';
 }
 
 /**

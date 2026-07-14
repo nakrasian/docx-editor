@@ -168,6 +168,46 @@ describe('Layout Engine - Page Production', () => {
       expect(layout.pages[0].fragments.length).toBe(3);
     });
 
+    test('uses the next section page size and margins after a section break', () => {
+      const firstSectionPage = { w: 800, h: 1000 };
+      const secondSectionPage = { w: 1000, h: 800 };
+      const firstSectionMargins: PageMargins = { top: 80, right: 80, bottom: 80, left: 80 };
+      const secondSectionMargins: PageMargins = { top: 40, right: 120, bottom: 40, left: 120 };
+      const blocks: FlowBlock[] = [
+        makeParagraphBlock(0, 'Portrait section', 1),
+        {
+          kind: 'sectionBreak',
+          id: 1,
+          pageSize: firstSectionPage,
+          margins: firstSectionMargins,
+        },
+        makeParagraphBlock(2, 'Landscape section', 20),
+      ];
+      const measures: Measure[] = [
+        makeParagraphMeasure([makeLine(0, 0, 0, 16, 120, 24)]),
+        { kind: 'sectionBreak' },
+        makeParagraphMeasure([makeLine(0, 0, 0, 17, 120, 24)]),
+      ];
+
+      const layout = layoutDocument(
+        blocks,
+        measures,
+        makeLayoutOptions({
+          pageSize: firstSectionPage,
+          margins: firstSectionMargins,
+          finalPageSize: secondSectionPage,
+          finalMargins: secondSectionMargins,
+        })
+      );
+
+      expect(layout.pages.length).toBe(2);
+      expect(layout.pages[0].size).toEqual(firstSectionPage);
+      expect(layout.pages[0].margins).toEqual(firstSectionMargins);
+      expect(layout.pages[1].size).toEqual(secondSectionPage);
+      expect(layout.pages[1].margins).toEqual(secondSectionMargins);
+      expect(layout.pages[1].fragments[0].x).toBe(secondSectionMargins.left);
+    });
+
     test('paragraph positions are stacked vertically', () => {
       const blocks: FlowBlock[] = [
         makeParagraphBlock(0, 'First', 1),
@@ -820,6 +860,8 @@ describe('Header/Footer Margin Inflation', () => {
 // =============================================================================
 
 describe('Layout Engine - Contextual Spacing', () => {
+  // Non-suppressed gaps below are max(spaceAfter, spaceBefore) — Word
+  // collapses adjacent paragraph spacing rather than summing it.
   /**
    * Helper to create a paragraph block with spacing and contextualSpacing attrs.
    */
@@ -905,9 +947,8 @@ describe('Layout Engine - Contextual Spacing', () => {
     const layout = layoutDocument(blocks, measures, makeLayoutOptions());
 
     const frags = layout.pages[0].fragments;
-    // Gap = max(spaceAfter=13, spaceBefore=5) = 13 (paginator collapses spacing)
     const gap = frags[1].y - (frags[0].y + frags[0].height);
-    expect(gap).toBe(13);
+    expect(gap).toBe(13); // max(13, 5)
   });
 
   test('does NOT suppress spacing when styles differ', () => {
@@ -933,9 +974,8 @@ describe('Layout Engine - Contextual Spacing', () => {
 
     const frags = layout.pages[0].fragments;
     // Different styles — spacing should NOT be suppressed
-    // gap = max(spaceAfter=13, spaceBefore=5) = 13
     const gap = frags[1].y - (frags[0].y + frags[0].height);
-    expect(gap).toBe(13);
+    expect(gap).toBe(13); // max(13, 5)
   });
 
   test('does NOT suppress when only one paragraph has contextualSpacing', () => {
@@ -960,9 +1000,8 @@ describe('Layout Engine - Contextual Spacing', () => {
     const layout = layoutDocument(blocks, measures, makeLayoutOptions());
 
     const frags = layout.pages[0].fragments;
-    // gap = max(spaceAfter=13, spaceBefore=5) = 13
     const gap = frags[1].y - (frags[0].y + frags[0].height);
-    expect(gap).toBe(13);
+    expect(gap).toBe(13); // max(13, 5)
   });
 
   test('suppresses spacing in a chain of 3+ same-style paragraphs', () => {
@@ -1040,17 +1079,15 @@ describe('Layout Engine - Contextual Spacing', () => {
     const frags = layout.pages[0].fragments;
     expect(frags.length).toBe(4);
 
-    // Gap between Normal and Bullet 1 — Normal has no contextualSpacing, so
-    // gap = max(spaceAfter=13, spaceBefore=5) = 13
+    // Normal → Bullet: no contextualSpacing, max(13, 5)
     const gap0to1 = frags[1].y - (frags[0].y + frags[0].height);
     expect(gap0to1).toBe(13);
 
-    // Gap between Bullet 1 and Bullet 2 — both contextual, same style → suppressed
+    // Bullet → Bullet: both contextual, same style → suppressed
     const gap1to2 = frags[2].y - (frags[1].y + frags[1].height);
     expect(gap1to2).toBe(0);
 
-    // Gap between Bullet 2 and Normal 2 — Normal 2 has no contextualSpacing
-    // gap = max(spaceAfter=13, spaceBefore=5) = 13
+    // Bullet → Normal: Normal lacks contextualSpacing, max(13, 5)
     const gap2to3 = frags[3].y - (frags[2].y + frags[2].height);
     expect(gap2to3).toBe(13);
   });
@@ -1078,8 +1115,7 @@ describe('Layout Engine - Contextual Spacing', () => {
 
     const frags = layout.pages[0].fragments;
     // Without styleId, contextual spacing should NOT be applied
-    // gap = max(spaceAfter=10, spaceBefore=5) = 10
     const gap = frags[1].y - (frags[0].y + frags[0].height);
-    expect(gap).toBe(10);
+    expect(gap).toBe(10); // max(10, 5)
   });
 });

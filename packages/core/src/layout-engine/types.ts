@@ -30,6 +30,53 @@ export type RunFormatting = {
   letterSpacing?: number;
   superscript?: boolean;
   subscript?: boolean;
+  /** Render glyphs as uppercase regardless of source case (OOXML w:caps). */
+  allCaps?: boolean;
+  /** Render lowercase glyphs as small uppercase (OOXML w:smallCaps). */
+  smallCaps?: boolean;
+  /**
+   * Vertical baseline shift in CSS pixels (positive = up). OOXML w:position is
+   * authored in half-points; converted to px during the bridge so the painter
+   * can apply it directly via vertical-align without re-doing the math.
+   */
+  positionPx?: number;
+  /**
+   * Horizontal text scale as a percentage (100 = normal, 50 = half-width,
+   * 200 = double-width). OOXML w:w specifies pct in raw % (e.g. 90 means 90%).
+   */
+  horizontalScale?: number;
+  /**
+   * Minimum font size in points at which kerning kicks in (OOXML w:kern, half-
+   * points in source). When this run's effective font size is at or above this
+   * threshold, the painter enables font-kerning: normal.
+   */
+  kerningMinPt?: number;
+  /** Engraved/imprint effect (OOXML w:imprint, §17.3.2.18). */
+  imprint?: boolean;
+  /** Embossed/raised effect (OOXML w:emboss, §17.3.2.13). */
+  emboss?: boolean;
+  /** Drop-shadow effect (OOXML w:shadow, §17.3.2.31). */
+  textShadow?: boolean;
+  /** Outlined / hollow text (OOXML w:outline, §17.3.2.23). */
+  textOutline?: boolean;
+  /**
+   * CJK emphasis mark (OOXML w:em, §17.3.2.12). Maps to CSS `text-emphasis`
+   * with a position and style; the painter handles the variant lookup.
+   */
+  emphasisMark?: 'dot' | 'comma' | 'circle' | 'underDot';
+  /** Hidden run (OOXML w:vanish, §17.3.2.41). Painter skips the run. */
+  hidden?: boolean;
+  /**
+   * Per-run right-to-left direction (OOXML w:rtl, §17.3.2.30). Independent
+   * from the paragraph's bidi flag — a single run may flip direction within
+   * an LTR paragraph.
+   */
+  rtl?: boolean;
+  /**
+   * Legacy text-effect animation (OOXML w:effect, §17.3.2.11). The painter
+   * surfaces it as a class hook so host CSS can opt in to animations.
+   */
+  textEffect?: 'blinkBackground' | 'lights' | 'antsBlack' | 'antsRed' | 'shimmer' | 'sparkle';
   /** Hyperlink info if this run is a link */
   hyperlink?: { href: string; tooltip?: string };
   /** Footnote reference ID (if this run contains a footnote reference) */
@@ -122,6 +169,13 @@ export type ImageRun = {
   distBottom?: number;
   distLeft?: number;
   distRight?: number;
+  /** wp:srcRect crop fractions in [0, 1]; emit as CSS clip-path inset. */
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
+  cropLeft?: number;
+  /** a:alphaModFix → CSS opacity in [0, 1]. */
+  opacity?: number;
   pmStart?: number;
   pmEnd?: number;
 };
@@ -226,6 +280,8 @@ export type ListNumPr = {
 export type ParagraphAttrs = {
   alignment?: 'left' | 'center' | 'right' | 'justify';
   spacing?: ParagraphSpacing;
+  /** See ParagraphFormatting.spacingExplicit. */
+  spacingExplicit?: { before?: boolean; after?: boolean };
   indent?: ParagraphIndent;
   keepNext?: boolean;
   keepLines?: boolean;
@@ -247,6 +303,14 @@ export type ParagraphAttrs = {
   // Default font for empty paragraphs (from style's rPr / pPr/rPr)
   defaultFontSize?: number; // in points
   defaultFontFamily?: string;
+  /**
+   * Skip the empty-paragraph line-height fallback. Used by HF measurement
+   * for the canonical OOXML "trailing empty paragraph after a table" pattern
+   * — Word renders that paragraph as a zero-height anchor, not as a full
+   * line-height of phantom space. See `normalizeHeaderFooterMeasureBlocks`
+   * (#381).
+   */
+  suppressEmptyParagraphHeight?: boolean;
 };
 
 /**
@@ -291,11 +355,21 @@ export type TableCell = {
   colSpan?: number;
   rowSpan?: number;
   width?: number;
+  /** Original DOCX cell width value, before unit conversion. */
+  widthValue?: number;
+  /** Original DOCX cell width type ('auto', 'pct', 'dxa', 'nil'). */
+  widthType?: string;
   verticalAlign?: 'top' | 'center' | 'bottom';
   background?: string;
   borders?: CellBorders;
   /** Per-cell padding in pixels (from w:tcMar or table-level w:tblCellMar) */
   padding?: { top: number; right: number; bottom: number; left: number };
+  /**
+   * `w:noWrap`: when true, the cell forbids text wrapping inside it. The
+   * painter renders this as `white-space: nowrap` on the content container
+   * — content stays on one line and the cell expands horizontally.
+   */
+  noWrap?: boolean;
 };
 
 /**
@@ -778,10 +852,14 @@ export type FootnoteContent = {
  * Options for the layout engine.
  */
 export type LayoutOptions = {
-  /** Default page size. */
+  /** Initial page size. */
   pageSize: { w: number; h: number };
-  /** Default page margins. */
+  /** Initial page margins. */
   margins: PageMargins;
+  /** Body-level (final section) page size, used after the last explicit section break. */
+  finalPageSize?: { w: number; h: number };
+  /** Body-level (final section) margins, used after the last explicit section break. */
+  finalMargins?: PageMargins;
   /** Column configuration. */
   columns?: ColumnLayout;
   /** Gap between rendered pages (for UI). */

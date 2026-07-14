@@ -18,6 +18,7 @@ import type {
   ParagraphFormatting,
   TextFormatting,
 } from '../../types/document';
+import { mergeTextFormatting } from '../../utils/textFormattingMerge';
 
 /**
  * Resolved style properties ready for rendering
@@ -53,6 +54,8 @@ export class StyleResolver {
   private readonly stylesById: Map<string, Style>;
   private readonly docDefaults: DocDefaults | undefined;
   private readonly defaultParagraphStyle: Style | undefined;
+  private readonly defaultTableStyle: Style | undefined;
+  private readonly defaultCharacterStyle: Style | undefined;
 
   constructor(styleDefinitions: StyleDefinitions | undefined) {
     this.stylesById = new Map();
@@ -67,8 +70,10 @@ export class StyleResolver {
       }
     }
 
-    // Find default paragraph style
+    // Find defaults — one per type per ECMA-376 §17.7.4.18.
     this.defaultParagraphStyle = this.findDefaultStyle('paragraph');
+    this.defaultTableStyle = this.findDefaultStyle('table');
+    this.defaultCharacterStyle = this.findDefaultStyle('character');
   }
 
   /**
@@ -95,6 +100,17 @@ export class StyleResolver {
       if (priorityA !== priorityB) return priorityA - priorityB;
       return (a.name ?? a.styleId).localeCompare(b.name ?? b.styleId);
     });
+  }
+
+  /**
+   * Whether a paragraph style with the given id is defined in the
+   * document's `styles.xml`. Used by the agent toolkit to refuse
+   * `set_paragraph_style({ styleId: 'NoSuchStyle' })` instead of
+   * silently writing an invalid `<w:pStyle>` reference.
+   */
+  hasParagraphStyle(styleId: string): boolean {
+    const style = this.stylesById.get(styleId);
+    return style?.type === 'paragraph';
   }
 
   /**
@@ -163,26 +179,32 @@ export class StyleResolver {
    * @returns Resolved text formatting
    */
   resolveRunStyle(styleId: string | undefined | null): TextFormatting | undefined {
-    // Start with document defaults
+    // OOXML §17.7.4.18 + §17.3.2 cascade for run formatting:
+    //   1. docDefaults.rPr            (rPrDefault)
+    //   2. default character style    (the style marked w:default="1")
+    //   3. explicit character style   (from <w:rStyle> on the run)
+    // Pre-PR this method skipped step 2, so any property set on the default
+    // character style (typically "Default Paragraph Font" / "FontePadrao")
+    // never reached runs without an explicit <w:rStyle>.
     let result: TextFormatting = {};
     if (this.docDefaults?.rPr) {
       result = { ...this.docDefaults.rPr };
     }
 
-    // If no styleId, return defaults
+    if (this.defaultCharacterStyle?.rPr) {
+      result = this.mergeTextFormatting(result, this.defaultCharacterStyle.rPr) ?? result;
+    }
+
     if (!styleId) {
       return Object.keys(result).length > 0 ? result : undefined;
     }
 
-    // Get the requested style
     const style = this.stylesById.get(styleId);
     if (!style?.rPr) {
       return Object.keys(result).length > 0 ? result : undefined;
     }
 
-    // Merge style's run properties
     const merged = this.mergeTextFormatting(result, style.rPr);
-
     return merged && Object.keys(merged).length > 0 ? merged : undefined;
   }
 
@@ -215,6 +237,30 @@ export class StyleResolver {
   }
 
   /**
+   * Get the default table style (the one marked `w:default="1"`).
+   *
+   * Per ECMA-376 §17.7.4.18, tables that don't specify a `w:tblStyle`
+   * inherit from this style. The styleId varies by document language
+   * ("Normal Table", "TableNormal", "Tabelanormal", etc.) — find it by
+   * the parsed `default` flag, not by name.
+   */
+  getDefaultTableStyle(): Style | undefined {
+    return this.defaultTableStyle;
+  }
+
+  /**
+   * Get the default character style (the one marked `w:default="1"`).
+   *
+   * Per ECMA-376 §17.7.4.18, runs without an explicit `w:rStyle` reference
+   * inherit from this style. The styleId varies by document language
+   * ("Default Paragraph Font", "FontePadrao", "Fontepargpadro" in
+   * Portuguese fixtures, etc.) — find it by the parsed `default` flag.
+   */
+  getDefaultCharacterStyle(): Style | undefined {
+    return this.defaultCharacterStyle;
+  }
+
+  /**
    * Check if a style exists
    */
   hasStyle(styleId: string): boolean {
@@ -225,7 +271,7 @@ export class StyleResolver {
   // Private helpers
   // ============================================================================
 
-  private findDefaultStyle(type: 'paragraph' | 'character'): Style | undefined {
+  private findDefaultStyle(type: 'paragraph' | 'character' | 'table'): Style | undefined {
     // First try to find explicitly marked default
     for (const style of this.stylesById.values()) {
       if (style.type === type && style.default) {
@@ -290,34 +336,11 @@ export class StyleResolver {
     return result;
   }
 
-  /**
-   * Merge text formatting (source overrides target)
-   */
   private mergeTextFormatting(
     target: TextFormatting | undefined,
     source: TextFormatting | undefined
   ): TextFormatting | undefined {
-    if (!source) return target;
-    if (!target) return source ? { ...source } : undefined;
-
-    const result = { ...target };
-
-    for (const key of Object.keys(source) as (keyof TextFormatting)[]) {
-      const value = source[key];
-      if (value !== undefined) {
-        if (typeof value === 'object' && value !== null) {
-          // Deep merge for objects like fontFamily, color, underline
-          (result as Record<string, unknown>)[key] = {
-            ...((result[key] as Record<string, unknown>) || {}),
-            ...(value as Record<string, unknown>),
-          };
-        } else {
-          (result as Record<string, unknown>)[key] = value;
-        }
-      }
-    }
-
-    return result;
+    return mergeTextFormatting(target, source);
   }
 }
 

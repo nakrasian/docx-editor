@@ -11,9 +11,12 @@
 import React, { useCallback, Children, isValidElement } from 'react';
 import type { ReactNode } from 'react';
 import { MenuDropdown } from './ui/MenuDropdown';
+import type { MenuEntry } from './ui/MenuDropdown';
+import { TableGridInline } from './ui/TableGridInline';
 import { useEditorToolbar } from './EditorToolbarContext';
+import type { FormattingAction } from './Toolbar';
 import { useTranslation } from '../i18n';
-import { getMenuConfig } from './Menus';
+import { openReportIssue } from './reportIssue';
 
 // ============================================================================
 // Default Doc Icon (shown when no Logo is provided)
@@ -107,16 +110,169 @@ export function TitleBarRight({ children }: TitleBarRightProps) {
 export function MenuBar() {
   const { t } = useTranslation();
   const ctx = useEditorToolbar();
+  const {
+    disabled = false,
+    onFormat,
+    onPrint,
+    showPrintButton = true,
+    onOpen,
+    onSave,
+    onPageSetup,
+    onInsertImage,
+    onInsertTable,
+    showTableInsert = true,
+    onInsertPageBreak,
+    onInsertTOC,
+    onRefocusEditor,
+  } = ctx;
 
-  const menuConfig = getMenuConfig(ctx, t, ctx.menuRegistry);
+  const handleFormat = useCallback(
+    (action: FormattingAction) => {
+      if (!disabled && onFormat) {
+        onFormat(action);
+      }
+    },
+    [disabled, onFormat]
+  );
 
-  const sortedMenus = Object.entries(menuConfig).sort(([, a], [, b]) => a.order - b.order);
+  const handleTableInsert = useCallback(
+    (rows: number, columns: number) => {
+      if (!disabled && onInsertTable) {
+        onInsertTable(rows, columns);
+        requestAnimationFrame(() => onRefocusEditor?.());
+      }
+    },
+    [disabled, onInsertTable, onRefocusEditor]
+  );
+
+  const hasPrintOrPageSetup = (showPrintButton && onPrint) || onPageSetup;
+  const hasFileMenu = hasPrintOrPageSetup || onOpen || onSave;
 
   return (
     <div className="flex items-center" role="menubar" aria-label={t('titleBar.menuBarAriaLabel')}>
-      {sortedMenus.map(([menuId, menu]) => (
-        <MenuDropdown key={menuId} label={menu.label} disabled={ctx.disabled} items={menu.items} />
-      ))}
+      {/* File Menu */}
+      {hasFileMenu && (
+        <MenuDropdown
+          label={t('toolbar.file')}
+          disabled={disabled}
+          items={[
+            ...(onOpen
+              ? [
+                  {
+                    icon: 'file_upload',
+                    label: t('toolbar.open'),
+                    shortcut: t('toolbar.openShortcut'),
+                    onClick: onOpen,
+                  } as MenuEntry,
+                ]
+              : []),
+            ...(onSave
+              ? [
+                  {
+                    icon: 'file_download',
+                    label: t('toolbar.save'),
+                    shortcut: t('toolbar.saveShortcut'),
+                    onClick: onSave,
+                  } as MenuEntry,
+                ]
+              : []),
+            ...((onOpen || onSave) && hasPrintOrPageSetup
+              ? [{ type: 'separator' as const } as MenuEntry]
+              : []),
+            ...(showPrintButton && onPrint
+              ? [
+                  {
+                    icon: 'print',
+                    label: t('toolbar.print'),
+                    shortcut: t('toolbar.printShortcut'),
+                    onClick: onPrint,
+                  } as MenuEntry,
+                ]
+              : []),
+            ...(onPageSetup
+              ? [
+                  {
+                    icon: 'settings',
+                    label: t('toolbar.pageSetup'),
+                    onClick: onPageSetup,
+                  } as MenuEntry,
+                ]
+              : []),
+          ]}
+        />
+      )}
+
+      {/* Format Menu */}
+      <MenuDropdown
+        label={t('toolbar.format')}
+        disabled={disabled}
+        items={[
+          {
+            icon: 'format_textdirection_l_to_r',
+            label: t('toolbar.leftToRight'),
+            onClick: () => handleFormat('setLtr'),
+          } as MenuEntry,
+          {
+            icon: 'format_textdirection_r_to_l',
+            label: t('toolbar.rightToLeft'),
+            onClick: () => handleFormat('setRtl'),
+          } as MenuEntry,
+        ]}
+      />
+
+      {/* Insert Menu */}
+      <MenuDropdown
+        label={t('toolbar.insert')}
+        disabled={disabled}
+        items={[
+          ...(onInsertImage
+            ? [{ icon: 'image', label: t('toolbar.image'), onClick: onInsertImage } as MenuEntry]
+            : []),
+          ...(showTableInsert && onInsertTable
+            ? [
+                {
+                  icon: 'grid_on',
+                  label: t('toolbar.table'),
+                  submenuContent: (closeMenu: () => void) => (
+                    <TableGridInline
+                      onInsert={(rows: number, cols: number) => {
+                        handleTableInsert(rows, cols);
+                        closeMenu();
+                      }}
+                    />
+                  ),
+                } as MenuEntry,
+              ]
+            : []),
+          ...(onInsertImage || (showTableInsert && onInsertTable)
+            ? [{ type: 'separator' as const } as MenuEntry]
+            : []),
+          {
+            icon: 'page_break',
+            label: t('toolbar.pageBreak'),
+            onClick: onInsertPageBreak,
+            disabled: !onInsertPageBreak,
+          },
+          {
+            icon: 'format_list_numbered',
+            label: t('toolbar.tableOfContents'),
+            onClick: onInsertTOC,
+            disabled: !onInsertTOC,
+          },
+        ]}
+      />
+
+      {/* Help Menu */}
+      <MenuDropdown
+        label={t('toolbar.help')}
+        disabled={disabled}
+        items={[
+          {
+            label: t('toolbar.reportIssue'),
+            onClick: () => openReportIssue(),
+          } as MenuEntry,
+        ]}
+      />
     </div>
   );
 }

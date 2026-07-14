@@ -27,6 +27,10 @@
     "file": "File",
     "format": "Format",
     "insert": "Insert",
+    "open": "Open",
+    "openShortcut": "Ctrl+O",
+    "save": "Save",
+    "saveShortcut": "Ctrl+S",
     "print": "Print",
     "printShortcut": "Ctrl+P",
     "pageSetup": "Page setup",
@@ -568,6 +572,9 @@
   "sidebar": {
     "ariaLabel": "Annotations sidebar"
   },
+  "viewer": {
+    "pageIndicator": "{current} of {total}"
+  },
   "titleBar": {
     "untitled": "Untitled",
     "documentNameAriaLabel": "Document name",
@@ -676,13 +683,28 @@
     "flipVertical": "Flip vertical"
   },
   "imageWrap": {
-    "inline": "Inline with text",
-    "floatLeft": "Float left (wrap right)",
-    "floatRight": "Float right (wrap left)",
-    "topAndBottom": "Top and bottom",
-    "behindText": "Behind text",
-    "inFrontOfText": "In front of text",
-    "tooltipPrefix": "Wrap: {label}"
+    "inline": "In Line with Text",
+    "floatLeft": "Square Left",
+    "floatRight": "Square Right",
+    "topAndBottom": "Top and Bottom",
+    "behindText": "Behind Text",
+    "inFrontOfText": "In Front of Text",
+    "tooltipPrefix": "Wrap: {label}",
+    "menu": {
+      "inLineWithText": "In Line with Text",
+      "squareLeft": "Square Left",
+      "squareRight": "Square Right",
+      "behindText": "Behind Text",
+      "inFrontOfText": "In Front of Text",
+      "ariaLabel": "Image layout options"
+    },
+    "menuDesc": {
+      "inLineWithText": "Image flows in the line as a glyph",
+      "squareLeft": "Image floats left, text wraps on the right",
+      "squareRight": "Image floats right, text wraps on the left",
+      "behindText": "Image paints behind body text",
+      "inFrontOfText": "Image paints over body text"
+    }
   },
   "responsePreview": {
     "loading": "{action}...",
@@ -758,5 +780,19 @@
   },
   "loading": {
     "label": "Loading"
+  },
+  "agentPanel": {
+    "defaultTitle": "Assistant",
+    "toggle": "Open assistant",
+    "close": "Close panel",
+    "resizeHandle": "Resize agent panel",
+    "thinking": "Assistant is thinking",
+    "composerPlaceholder": "Ask the assistant…",
+    "send": "Send",
+    "timeline": {
+      "working": "Working… {count, plural, one {# step} other {# steps}}",
+      "summary": "{count, plural, one {# step} other {# steps}}",
+      "earlier": "+ {count, plural, one {# earlier step} other {# earlier steps}}"
+    }
   }
 }

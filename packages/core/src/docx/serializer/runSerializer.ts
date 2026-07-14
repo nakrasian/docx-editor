@@ -36,7 +36,7 @@ import type {
   RunPropertyChange,
 } from '../../types/document';
 import { serializeParagraph } from './paragraphSerializer';
-import { escapeXml } from './xmlUtils';
+import { escapeXml, intAttr } from './xmlUtils';
 
 // ============================================================================
 // CONSTANTS
@@ -297,31 +297,31 @@ export function serializeTextFormatting(formatting: TextFormatting | undefined):
 
   // Spacing
   if (formatting.spacing !== undefined) {
-    parts.push(`<w:spacing w:val="${formatting.spacing}"/>`);
+    parts.push(`<w:spacing w:val="${intAttr(formatting.spacing)}"/>`);
   }
 
   // Scale (w:w)
   if (formatting.scale !== undefined) {
-    parts.push(`<w:w w:val="${formatting.scale}"/>`);
+    parts.push(`<w:w w:val="${intAttr(formatting.scale)}"/>`);
   }
 
   // Kerning
   if (formatting.kerning !== undefined) {
-    parts.push(`<w:kern w:val="${formatting.kerning}"/>`);
+    parts.push(`<w:kern w:val="${intAttr(formatting.kerning)}"/>`);
   }
 
   // Position
   if (formatting.position !== undefined) {
-    parts.push(`<w:position w:val="${formatting.position}"/>`);
+    parts.push(`<w:position w:val="${intAttr(formatting.position)}"/>`);
   }
 
   // Font size
   if (formatting.fontSize !== undefined) {
-    parts.push(`<w:sz w:val="${formatting.fontSize}"/>`);
+    parts.push(`<w:sz w:val="${intAttr(formatting.fontSize)}"/>`);
   }
 
   if (formatting.fontSizeCs !== undefined) {
-    parts.push(`<w:szCs w:val="${formatting.fontSizeCs}"/>`);
+    parts.push(`<w:szCs w:val="${intAttr(formatting.fontSizeCs)}"/>`);
   }
 
   // Highlight — emit valid OOXML named colors via w:highlight,
@@ -628,7 +628,7 @@ function serializePosition(pos: ImagePosition): string {
   if (h.alignment) {
     parts.push(`<wp:align>${h.alignment}</wp:align>`);
   } else {
-    parts.push(`<wp:posOffset>${h.posOffset || 0}</wp:posOffset>`);
+    parts.push(`<wp:posOffset>${intAttr(h.posOffset)}</wp:posOffset>`);
   }
   parts.push('</wp:positionH>');
 
@@ -638,7 +638,7 @@ function serializePosition(pos: ImagePosition): string {
   if (v.alignment) {
     parts.push(`<wp:align>${v.alignment}</wp:align>`);
   } else {
-    parts.push(`<wp:posOffset>${v.posOffset || 0}</wp:posOffset>`);
+    parts.push(`<wp:posOffset>${intAttr(v.posOffset)}</wp:posOffset>`);
   }
   parts.push('</wp:positionV>');
 
@@ -680,6 +680,24 @@ function serializePicGraphic(image: Image, sharedId: string): string {
   if (image.transform?.flipH) xfrmAttrs += ' flipH="1"';
   if (image.transform?.flipV) xfrmAttrs += ' flipV="1"';
 
+  // Build <a:blip> with optional <a:alphaModFix> child for transparency.
+  const alphaChild =
+    image.opacity !== undefined && image.opacity < 1
+      ? `<a:alphaModFix amt="${Math.round(Math.max(0, Math.min(1, image.opacity)) * 100000)}"/>`
+      : '';
+  const blipEl = alphaChild
+    ? `<a:blip r:embed="${rId}">${alphaChild}</a:blip>`
+    : `<a:blip r:embed="${rId}"/>`;
+
+  // Build optional <a:srcRect/> for wp:srcRect crop. Each side is a
+  // fraction in [0, 1]; OOXML expects 1/100000 units.
+  const cropAttrs: string[] = [];
+  if (image.crop?.left) cropAttrs.push(`l="${Math.round(image.crop.left * 100000)}"`);
+  if (image.crop?.top) cropAttrs.push(`t="${Math.round(image.crop.top * 100000)}"`);
+  if (image.crop?.right) cropAttrs.push(`r="${Math.round(image.crop.right * 100000)}"`);
+  if (image.crop?.bottom) cropAttrs.push(`b="${Math.round(image.crop.bottom * 100000)}"`);
+  const srcRectEl = cropAttrs.length > 0 ? `<a:srcRect ${cropAttrs.join(' ')}/>` : '';
+
   return [
     '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">',
     '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">',
@@ -689,13 +707,14 @@ function serializePicGraphic(image: Image, sharedId: string): string {
     '<pic:cNvPicPr/>',
     '</pic:nvPicPr>',
     '<pic:blipFill>',
-    `<a:blip r:embed="${rId}"/>`,
+    blipEl,
+    srcRectEl,
     '<a:stretch><a:fillRect/></a:stretch>',
     '</pic:blipFill>',
     '<pic:spPr>',
     `<a:xfrm${xfrmAttrs}>`,
     '<a:off x="0" y="0"/>',
-    `<a:ext cx="${cx}" cy="${cy}"/>`,
+    `<a:ext cx="${intAttr(cx)}" cy="${intAttr(cy)}"/>`,
     '</a:xfrm>',
     '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>',
     image.outline ? serializeOutline(image.outline) : '',
@@ -714,10 +733,18 @@ function serializeDrawingContent(content: DrawingContent): string {
   const isFloating = image.wrap.type !== 'inline';
   const cx = image.size.width;
   const cy = image.size.height;
-  const distT = image.padding?.top ?? image.wrap.distT ?? 0;
-  const distB = image.padding?.bottom ?? image.wrap.distB ?? 0;
-  const distL = image.padding?.left ?? image.wrap.distL ?? 0;
-  const distR = image.padding?.right ?? image.wrap.distR ?? 0;
+  // dist* on wp:inline / wp:anchor are text-wrap distances; effectExtent is
+  // a separate element. Don't conflate `image.padding` (effectExtent) into
+  // the wrap distance attributes.
+  const distT = image.wrap.distT ?? 0;
+  const distB = image.wrap.distB ?? 0;
+  const distL = image.wrap.distL ?? 0;
+  const distR = image.wrap.distR ?? 0;
+  const effL = image.padding?.left ?? 0;
+  const effT = image.padding?.top ?? 0;
+  const effR = image.padding?.right ?? 0;
+  const effB = image.padding?.bottom ?? 0;
+  const effectExtentEl = `<wp:effectExtent l="${intAttr(effL)}" t="${intAttr(effT)}" r="${intAttr(effR)}" b="${intAttr(effB)}"/>`;
   const docPrId = getUniqueId(image.id);
   const docPrName = image.title || image.filename || `Picture ${docPrId}`;
 
@@ -727,9 +754,9 @@ function serializeDrawingContent(content: DrawingContent): string {
     // Inline image
     return [
       '<w:drawing>',
-      `<wp:inline distT="${distT}" distB="${distB}" distL="${distL}" distR="${distR}">`,
-      `<wp:extent cx="${cx}" cy="${cy}"/>`,
-      '<wp:effectExtent l="0" t="0" r="0" b="0"/>',
+      `<wp:inline distT="${intAttr(distT)}" distB="${intAttr(distB)}" distL="${intAttr(distL)}" distR="${intAttr(distR)}">`,
+      `<wp:extent cx="${intAttr(cx)}" cy="${intAttr(cy)}"/>`,
+      effectExtentEl,
       `<wp:docPr id="${docPrId}" name="${escapeXml(docPrName)}"${image.alt ? ` descr="${escapeXml(image.alt)}"` : ''}${image.decorative ? ' hidden="1"' : ''}/>`,
       '<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>',
       graphic,
@@ -747,11 +774,11 @@ function serializeDrawingContent(content: DrawingContent): string {
 
   return [
     '<w:drawing>',
-    `<wp:anchor distT="${distT}" distB="${distB}" distL="${distL}" distR="${distR}" simplePos="0" relativeHeight="251658240" behindDoc="${behindDoc}" locked="0" layoutInCell="1" allowOverlap="1">`,
+    `<wp:anchor distT="${intAttr(distT)}" distB="${intAttr(distB)}" distL="${intAttr(distL)}" distR="${intAttr(distR)}" simplePos="0" relativeHeight="251658240" behindDoc="${behindDoc}" locked="0" layoutInCell="${image.layoutInCell === false ? '0' : '1'}" allowOverlap="${image.allowOverlap === false ? '0' : '1'}">`,
     '<wp:simplePos x="0" y="0"/>',
     position,
-    `<wp:extent cx="${cx}" cy="${cy}"/>`,
-    '<wp:effectExtent l="0" t="0" r="0" b="0"/>',
+    `<wp:extent cx="${intAttr(cx)}" cy="${intAttr(cy)}"/>`,
+    effectExtentEl,
     wrap,
     `<wp:docPr id="${docPrId}" name="${escapeXml(docPrName)}"${image.alt ? ` descr="${escapeXml(image.alt)}"` : ''}/>`,
     '<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>',
@@ -795,7 +822,7 @@ function serializeShapeContent(content: ShapeContent): string {
     '<wps:spPr>',
     `<a:xfrm${xfrmAttrs}>`,
     '<a:off x="0" y="0"/>',
-    `<a:ext cx="${cx}" cy="${cy}"/>`,
+    `<a:ext cx="${intAttr(cx)}" cy="${intAttr(cy)}"/>`,
     '</a:xfrm>',
     `<a:prstGeom prst="${shape.shapeType === 'textBox' ? 'rect' : shape.shapeType}"><a:avLst/></a:prstGeom>`,
     serializeFill(shape.fill),
@@ -811,10 +838,10 @@ function serializeShapeContent(content: ShapeContent): string {
     if (tb.anchor) bpAttrs.push(`anchor="${tb.anchor === 'middle' ? 'ctr' : tb.anchor}"`);
     if (tb.anchorCenter) bpAttrs.push('anchorCtr="1"');
     if (tb.margins) {
-      if (tb.margins.left != null) bpAttrs.push(`lIns="${tb.margins.left}"`);
-      if (tb.margins.top != null) bpAttrs.push(`tIns="${tb.margins.top}"`);
-      if (tb.margins.right != null) bpAttrs.push(`rIns="${tb.margins.right}"`);
-      if (tb.margins.bottom != null) bpAttrs.push(`bIns="${tb.margins.bottom}"`);
+      if (tb.margins.left != null) bpAttrs.push(`lIns="${intAttr(tb.margins.left)}"`);
+      if (tb.margins.top != null) bpAttrs.push(`tIns="${intAttr(tb.margins.top)}"`);
+      if (tb.margins.right != null) bpAttrs.push(`rIns="${intAttr(tb.margins.right)}"`);
+      if (tb.margins.bottom != null) bpAttrs.push(`bIns="${intAttr(tb.margins.bottom)}"`);
     }
 
     if (isTextBox) {
@@ -850,8 +877,8 @@ function serializeShapeContent(content: ShapeContent): string {
   if (!isFloating) {
     return [
       '<w:drawing>',
-      `<wp:inline distT="${distT}" distB="${distB}" distL="${distL}" distR="${distR}">`,
-      `<wp:extent cx="${cx}" cy="${cy}"/>`,
+      `<wp:inline distT="${intAttr(distT)}" distB="${intAttr(distB)}" distL="${intAttr(distL)}" distR="${intAttr(distR)}">`,
+      `<wp:extent cx="${intAttr(cx)}" cy="${intAttr(cy)}"/>`,
       '<wp:effectExtent l="0" t="0" r="0" b="0"/>',
       `<wp:docPr id="${docPrId}" name="${escapeXml(docPrName)}"/>`,
       '<wp:cNvGraphicFramePr/>',
@@ -870,10 +897,10 @@ function serializeShapeContent(content: ShapeContent): string {
 
   return [
     '<w:drawing>',
-    `<wp:anchor distT="${distT}" distB="${distB}" distL="${distL}" distR="${distR}" simplePos="0" relativeHeight="251658240" behindDoc="${behindDoc}" locked="0" layoutInCell="1" allowOverlap="1">`,
+    `<wp:anchor distT="${intAttr(distT)}" distB="${intAttr(distB)}" distL="${intAttr(distL)}" distR="${intAttr(distR)}" simplePos="0" relativeHeight="251658240" behindDoc="${behindDoc}" locked="0" layoutInCell="1" allowOverlap="1">`,
     '<wp:simplePos x="0" y="0"/>',
     position,
-    `<wp:extent cx="${cx}" cy="${cy}"/>`,
+    `<wp:extent cx="${intAttr(cx)}" cy="${intAttr(cy)}"/>`,
     '<wp:effectExtent l="0" t="0" r="0" b="0"/>',
     wrap,
     `<wp:docPr id="${docPrId}" name="${escapeXml(docPrName)}"/>`,

@@ -48,6 +48,7 @@ import {
   type XmlElement,
 } from './xmlParser';
 import { resolveThemeFontRef } from './themeParser';
+import { mergeTextFormatting } from '../utils/textFormattingMerge';
 
 /**
  * Style map keyed by styleId
@@ -1077,32 +1078,6 @@ function parseDocDefaults(
 }
 
 /**
- * Deep merge text formatting (source overrides target)
- */
-function mergeTextFormatting(
-  target: TextFormatting | undefined,
-  source: TextFormatting | undefined
-): TextFormatting | undefined {
-  if (!source) return target;
-  if (!target) return source ? { ...source } : undefined;
-
-  const result = { ...target };
-
-  // Copy all defined properties from source
-  for (const key of Object.keys(source) as (keyof TextFormatting)[]) {
-    const value = source[key];
-    if (value !== undefined) {
-      (result as any)[key] =
-        typeof value === 'object' && value !== null
-          ? { ...((result[key] as any) || {}), ...value }
-          : value;
-    }
-  }
-
-  return result;
-}
-
-/**
  * Deep merge paragraph formatting (source overrides target)
  */
 function mergeParagraphFormatting(
@@ -1298,6 +1273,24 @@ export function getDefaultParagraphStyle(styleMap: StyleMap): Style | undefined 
 export function getDefaultCharacterStyle(styleMap: StyleMap): Style | undefined {
   for (const style of styleMap.values()) {
     if (style.type === 'character' && style.default) {
+      return style;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Get the default table style.
+ *
+ * Per ECMA-376 §17.7.4.18 (`<w:default>`), exactly one style of each type may
+ * be marked default; tables that do not specify a `w:tblStyle` inherit from
+ * that style. The styleId varies by document language ("Normal Table",
+ * "TableNormal", "Tabelanormal", etc.) — find it by the parsed `default` flag,
+ * not by name.
+ */
+export function getDefaultTableStyle(styleMap: StyleMap): Style | undefined {
+  for (const style of styleMap.values()) {
+    if (style.type === 'table' && style.default) {
       return style;
     }
   }

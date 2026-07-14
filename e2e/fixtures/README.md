@@ -35,6 +35,26 @@ A document with complex styling:
 - Headers/footers
 - Multiple sections
 
+### wrap-none-positioned-image-demo.docx
+
+A synthetic document containing a positioned image anchored with `wp:wrapNone`.
+Used to reproduce anchored images that should paint independently without adding
+paragraph flow height or text-wrap margins.
+
+### wrap-none-two-seals-title-box-demo.docx
+
+A synthetic title-page document containing two `behindDoc` `wp:wrapNone` images
+aligned to the left and right margins around a centered title box. Used to
+reproduce multiple non-wrapping anchored images on the same page.
+
+### image-layout-modes-demo.docx
+
+A synthetic document containing exactly one image of each of Word's three core
+layout modes — `wp:inline` (in-line), `wp:wrapSquare` (wrap-around float), and
+`wp:wrapTopAndBottom` (full-width block) — in a single document. Used by
+`e2e/tests/image-layout-modes.spec.ts` to lock in correct rendering of all
+three paths side by side.
+
 ## Generating Fixtures
 
 To regenerate fixtures, run:

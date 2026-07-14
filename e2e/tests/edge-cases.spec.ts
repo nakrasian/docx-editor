@@ -141,6 +141,18 @@ test.describe('Boundary Conditions', () => {
     await editor.expectReady();
   });
 
+  test('page font fallback matches measurement fallback (#334)', async ({ page }) => {
+    // Page-level default chain must contain Carlito so it agrees with the
+    // canvas measurement chain (resolveFontFamily('Calibri')). Otherwise
+    // unbreakable runs without explicit fontFamily overflow the page margin.
+    const pageFont = await page.evaluate(() => {
+      const pageEl = document.querySelector('.layout-page') as HTMLElement | null;
+      return pageEl?.style.fontFamily ?? null;
+    });
+    expect(pageFont).not.toBeNull();
+    expect(pageFont!.toLowerCase()).toContain('carlito');
+  });
+
   test('many empty paragraphs', async ({ page }) => {
     // Create many empty paragraphs
     for (let i = 0; i < 20; i++) {

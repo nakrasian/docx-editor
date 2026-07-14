@@ -21,6 +21,7 @@ import type {
   SectionProperties,
 } from '../../types/document';
 import type { FloatingTableProperties, TableLook } from '../../types';
+import type { WrapType } from '../../docx/wrapTypes';
 
 /**
  * Paragraph node attributes - maps to ParagraphFormatting
@@ -38,6 +39,8 @@ export interface ParagraphAttrs {
   spaceAfter?: number;
   lineSpacing?: number;
   lineSpacingRule?: LineSpacingRule;
+  /** See ParagraphFormatting.spacingExplicit. */
+  spacingExplicit?: import('../../types/formatting').SpacingExplicit;
 
   // Indentation (in twips)
   indentLeft?: number;
@@ -62,6 +65,16 @@ export interface ParagraphAttrs {
   listMarkerFontFamily?: string;
   /** Marker font size from numbering level rPr, in points */
   listMarkerFontSize?: number;
+  /**
+   * NumberFormat for each level 0..ilvl (inclusive).
+   * Lets toFlowBlocks resolve multi-level templates like "%1.%2." with
+   * the correct format per token.
+   */
+  listLevelNumFmts?: NumberFormat[];
+  /** See ListRendering.abstractNumId. */
+  listAbstractNumId?: number;
+  /** See ListRendering.startOverride. */
+  listStartOverride?: number;
 
   // Style reference
   styleId?: string;
@@ -84,6 +97,12 @@ export interface ParagraphAttrs {
 
   // Page break control
   pageBreakBefore?: boolean;
+  /**
+   * Word's cached layout marker (`<w:lastRenderedPageBreak/>`). Treated like
+   * `pageBreakBefore` for layout, kept as a separate attr so save+reload
+   * preserves the marker at the same position Word recorded.
+   */
+  renderedPageBreakBefore?: boolean;
   keepNext?: boolean;
   keepLines?: boolean;
   /** Contextual spacing — suppress space between same-style paragraphs */
@@ -143,7 +162,7 @@ export interface ImageAttrs {
   height?: number;
   rId?: string;
   /** Wrap type from DOCX: inline, square, tight, through, topAndBottom, behind, inFront */
-  wrapType?: 'inline' | 'square' | 'tight' | 'through' | 'topAndBottom' | 'behind' | 'inFront';
+  wrapType?: WrapType;
   /** Display mode for CSS: inline (flows with text), float (left/right float), block (centered) */
   displayMode?: 'inline' | 'float' | 'block';
   /** CSS float direction for floating images */
@@ -170,6 +189,32 @@ export interface ImageAttrs {
   wrapText?: string;
   /** Hyperlink URL for clickable image */
   hlinkHref?: string;
+  /**
+   * `wp:srcRect` crop fractions in [0, 1]. Each side is the fraction of the
+   * source image that should be hidden. Renders as CSS `clip-path: inset(...)`.
+   */
+  cropTop?: number;
+  cropRight?: number;
+  cropBottom?: number;
+  cropLeft?: number;
+  /** `a:alphaModFix amt` mapped to CSS `opacity` in [0, 1]. */
+  opacity?: number;
+  /**
+   * `wp:effectExtent` padding (pixels) — extra space reserved around the image
+   * for shadows, glows, soft edges, etc. Applied as outer margin so the
+   * effect isn't clipped by surrounding content.
+   */
+  effectExtentTop?: number;
+  effectExtentBottom?: number;
+  effectExtentLeft?: number;
+  effectExtentRight?: number;
+  /**
+   * `wp:anchor layoutInCell`. Tri-state: true / false / undefined (= Word's
+   * default "1"). Floating-only; round-tripped on save.
+   */
+  layoutInCell?: boolean;
+  /** `wp:anchor allowOverlap`. Same tri-state convention as `layoutInCell`. */
+  allowOverlap?: boolean;
 }
 
 /**

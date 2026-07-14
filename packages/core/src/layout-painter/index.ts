@@ -3,6 +3,10 @@
  *
  * Main entry point for rendering Layout data to DOM.
  * Provides reconciliation for efficient incremental updates.
+ *
+ * @experimental Stable enough for the first-party React adapter, but the
+ * API may change in minor releases until a third-party adapter validates
+ * it. Pin a version range if you depend on this directly.
  */
 
 import type {
@@ -24,7 +28,14 @@ import type {
   TextBoxMeasure,
   TextBoxFragment,
 } from '../layout-engine/types';
-import { renderPage, renderPages, type RenderContext } from './renderPage';
+import {
+  renderPage,
+  renderPages,
+  isFloatingImageRun,
+  isTextWrappingFloatingImageRun,
+  type RenderContext,
+  type RenderPagesUpdateKind,
+} from './renderPage';
 import { renderParagraphFragment, sliceRunsForLine, renderLine } from './renderParagraph';
 import { renderFragment, FRAGMENT_CLASS_NAMES } from './renderFragment';
 import { renderTableFragment, TABLE_CLASS_NAMES } from './renderTable';
@@ -46,8 +57,24 @@ export {
   IMAGE_CLASS_NAMES,
   renderTextBoxFragment,
   TEXTBOX_CLASS_NAMES,
+  isFloatingImageRun,
+  isTextWrappingFloatingImageRun,
   type RenderContext,
 };
+export type { RenderPagesUpdateKind };
+export type { HeaderFooterContent, RenderPageOptions, FootnoteRenderItem } from './renderPage';
+
+// Framework-agnostic image layout helpers shared by React + Vue adapters.
+export {
+  LAYOUT_IMAGE_CLASSES,
+  hitTestImage,
+  captureInlinePositionEmu,
+  deriveLayoutChoice,
+  IMAGE_LAYOUT_OPTIONS,
+  isImageLayoutOptionEnabled,
+  toolbarValueToLayoutTarget,
+} from './imageLayout';
+export type { ImageHitTestResult, ImageLayoutIconHint, ImageLayoutOptionDef } from './imageLayout';
 
 /**
  * Block lookup entry for painter

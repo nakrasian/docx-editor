@@ -42,9 +42,11 @@ import type {
   MathEquation,
 } from '../../types/document';
 import { emuToPixels } from '../../docx/imageParser';
+import { isWrapNone } from '../../docx/wrapTypes';
 import { createStyleResolver, type StyleResolver } from '../styles';
 import type { TableAttrs, TableRowAttrs, TableCellAttrs } from '../schema/nodes';
 import { resolveColorToHex } from '../../utils/colorResolver';
+import { mergeTextFormatting } from '../../utils/textFormattingMerge';
 import type { Theme } from '../../types/document';
 
 /**
@@ -282,6 +284,9 @@ function paragraphFormattingToAttrs(
     listMarkerHidden: paragraph.listRendering?.markerHidden || undefined,
     listMarkerFontFamily: paragraph.listRendering?.markerFontFamily || undefined,
     listMarkerFontSize: paragraph.listRendering?.markerFontSize || undefined,
+    listLevelNumFmts: paragraph.listRendering?.levelNumFmts || undefined,
+    listAbstractNumId: paragraph.listRendering?.abstractNumId,
+    listStartOverride: paragraph.listRendering?.startOverride,
     // Store original inline formatting for lossless serialization round-trip
     _originalFormatting: formatting || undefined,
   };
@@ -298,6 +303,8 @@ function paragraphFormattingToAttrs(
     attrs.spaceAfter = formatting?.spaceAfter ?? stylePpr?.spaceAfter;
     attrs.lineSpacing = formatting?.lineSpacing ?? stylePpr?.lineSpacing;
     attrs.lineSpacingRule = formatting?.lineSpacingRule ?? stylePpr?.lineSpacingRule;
+    // Carry through only the inline-explicit flags (never style-resolved).
+    if (formatting?.spacingExplicit) attrs.spacingExplicit = formatting.spacingExplicit;
     attrs.indentLeft = formatting?.indentLeft ?? stylePpr?.indentLeft;
     attrs.indentRight = formatting?.indentRight ?? stylePpr?.indentRight;
     attrs.indentFirstLine = formatting?.indentFirstLine ?? stylePpr?.indentFirstLine;
@@ -318,9 +325,23 @@ function paragraphFormattingToAttrs(
     // Text direction
     attrs.bidi = formatting?.bidi ?? stylePpr?.bidi;
 
-    // Default run properties (pPr/rPr)
+    // Default run properties for runs in this paragraph that don't carry
+    // explicit marks. ECMA-376 §17.7.4.18 + §17.3.2 cascade for run
+    // formatting:
+    //   1. docDefaults.rPr            (already in styleRpr)
+    //   2. paragraph style's rPr      (already in styleRpr — basedOn flattened)
+    //   3. default character style    (the style marked w:default="1")
+    //   4. paragraph-level rPr        (from <w:pPr><w:rPr>)
+    // The character-style step on the run itself (w:rStyle) applies later in
+    // the per-run conversion. Without merging the default character style
+    // here, runs without an explicit <w:rStyle> never see properties set on
+    // it (e.g. "Default Paragraph Font" / "FontePadrao" font overrides).
+    const defaultCharStyleRpr = styleResolver.getDefaultCharacterStyle()?.rPr;
+    const styleRprWithDefaultChar = defaultCharStyleRpr
+      ? mergeTextFormatting(styleRpr, defaultCharStyleRpr)
+      : styleRpr;
     const resolvedRunProps = resolveTextFormatting(formatting?.runProperties, styleResolver);
-    attrs.defaultTextFormatting = mergeTextFormatting(styleRpr, resolvedRunProps);
+    attrs.defaultTextFormatting = mergeTextFormatting(styleRprWithDefaultChar, resolvedRunProps);
 
     // If style defines numPr but inline doesn't, use style's numPr
     // numId === 0 means "no numbering" per OOXML spec — skip it
@@ -334,6 +355,7 @@ function paragraphFormattingToAttrs(
     attrs.spaceAfter = formatting?.spaceAfter;
     attrs.lineSpacing = formatting?.lineSpacing;
     attrs.lineSpacingRule = formatting?.lineSpacingRule;
+    if (formatting?.spacingExplicit) attrs.spacingExplicit = formatting.spacingExplicit;
     attrs.indentLeft = formatting?.indentLeft;
     attrs.indentRight = formatting?.indentRight;
     attrs.indentFirstLine = formatting?.indentFirstLine;
@@ -364,6 +386,9 @@ function paragraphFormattingToAttrs(
     if (st === 'nextPage' || st === 'continuous' || st === 'oddPage' || st === 'evenPage') {
       attrs.sectionBreakType = st;
     }
+  }
+  if (paragraph.renderedPageBreakBefore) {
+    attrs.renderedPageBreakBefore = true;
   }
 
   return attrs;
@@ -451,9 +476,15 @@ function resolveTextFormatting(
   styleResolver: StyleResolver | null
 ): TextFormatting | undefined {
   if (!formatting) return undefined;
-  if (!formatting.styleId || !styleResolver) return formatting;
+  if (!styleResolver) return formatting;
 
+  // Even when the run has no explicit <w:rStyle>, OOXML §17.7.4.18 says it
+  // still inherits from the default character style. resolveRunStyle(undef)
+  // returns docDefaults.rPr merged with the default character style's rPr —
+  // pre-PR we skipped this path entirely for runs without a styleId, losing
+  // any property the default character style sets.
   const styleFormatting = styleResolver.resolveRunStyle(formatting.styleId);
+  if (!styleFormatting) return formatting;
   return mergeTextFormatting(styleFormatting, formatting);
 }
 
@@ -534,13 +565,30 @@ function convertTable(
   const tableStyleId = table.formatting?.styleId;
   const look = table.formatting?.look;
 
-  // Resolve table borders: prefer table's own borders, fall back to table style's borders
+  // Resolve table borders via the OOXML cascade (§17.4.41 + §17.7.4.18):
+  //   1. inline w:tblBorders on the table
+  //   2. table style's tblPr.borders (basedOn chain already flattened)
+  //   3. default table style's tblPr.borders (the style marked w:default="1")
+  // Pre-PR, when no tblStyle was set we hardcoded a lookup of styleId
+  // "TableGrid" — fragile for non-Word generators (which may not ship that
+  // style) and incorrect for docs whose default table style differs from
+  // TableGrid. Walking through the parsed default flag matches spec and
+  // works for any document language ("Normal Table", "TableNormal", etc.).
   const tableStyle = tableStyleId ? styleResolver?.getStyle(tableStyleId) : undefined;
-  const resolvedTableBorders = table.formatting?.borders ?? tableStyle?.tblPr?.borders;
+  const defaultTableStyle = styleResolver?.getDefaultTableStyle();
+  const resolvedTableBorders =
+    table.formatting?.borders ?? tableStyle?.tblPr?.borders ?? defaultTableStyle?.tblPr?.borders;
 
-  // Resolve default cell margins: table's own cellMargins > table style's cellMargins
+  // Resolve default cell margins via the same cascade as borders. Tables
+  // that don't carry a tblStyle reference still inherit cellMargins from the
+  // default table style per §17.4.41 + §17.7.4.18; pre-PR such tables had
+  // no cellMargins at all and the layout-bridge fell back to a hardcoded
+  // 7 px. `defaultTableStyle` is shared with the borders cascade above.
   const tableCellMargins =
-    table.formatting?.cellMargins ?? tableStyle?.tblPr?.cellMargins ?? undefined;
+    table.formatting?.cellMargins ??
+    tableStyle?.tblPr?.cellMargins ??
+    defaultTableStyle?.tblPr?.cellMargins ??
+    undefined;
   const cellMarginsAttr = tableCellMargins
     ? {
         top: tableCellMargins.top?.value,
@@ -586,8 +634,12 @@ function convertTable(
   const totalRows = table.rows.length;
   const totalColumns =
     columnWidths?.length ??
-    table.rows[0]?.cells.reduce((sum, cell) => sum + (cell.formatting?.gridSpan ?? 1), 0) ??
-    0;
+    Math.max(
+      0,
+      ...table.rows.map((row) =>
+        row.cells.reduce((sum, cell) => sum + (cell.formatting?.gridSpan ?? 1), 0)
+      )
+    );
   const rows = table.rows.map((row, rowIndex) => {
     // Conditional formatting flag: firstRow in tblLook means "apply first-row styling"
     const isFirstRowStyled = rowIndex === 0 && !!look?.firstRow;
@@ -848,6 +900,32 @@ function convertTableRow(
   return schema.node('tableRow', attrs, cells);
 }
 
+const CELL_BORDER_SIDES = ['top', 'bottom', 'left', 'right', 'insideH', 'insideV'] as const;
+
+/**
+ * Bake themed border colors to RGB up front: the cell schema's `toDOM` has no
+ * theme access, so a `themeColor` border would otherwise hit the default Office
+ * palette there. Mirrors how cell shading resolves into `backgroundColor`.
+ * `auto`, plain-RGB, and unresolvable-themed colors pass through unchanged
+ * (`resolveColor` defaults the last case downstream).
+ */
+function resolveBorderColors(
+  borders: TableBorders | undefined,
+  theme: Theme | null | undefined
+): TableBorders | undefined {
+  if (!borders) return borders;
+  let resolved: TableBorders | undefined;
+  for (const side of CELL_BORDER_SIDES) {
+    const border = borders[side];
+    if (!border?.color?.themeColor || border.color.auto) continue;
+    const hex = resolveColorToHex(border.color, theme);
+    if (!hex) continue;
+    resolved ??= { ...borders };
+    resolved[side] = { ...border, color: { rgb: hex } };
+  }
+  return resolved ?? borders;
+}
+
 /**
  * Convert a TableCell to a ProseMirror table cell node
  */
@@ -871,7 +949,8 @@ function convertTableCell(
   // Use the pre-calculated rowSpan from vMerge analysis
   const rowspan = calculatedRowSpan ?? 1;
 
-  // Determine width: prefer cell's own width, fall back to grid width
+  // Determine width: prefer cell's own width, fall back to grid width.
+  // Non-positive values fall through; resolveTableWidthPx maps them to undefined.
   let width = formatting?.width?.value;
   let widthType = formatting?.width?.type;
 
@@ -901,14 +980,16 @@ function convertTableCell(
   const conditionalBorders = conditionalStyle?.tcPr?.borders;
   const cellBorders = formatting?.borders;
 
-  const borders =
+  const borders = resolveBorderColors(
     baseBorders || conditionalBorders || cellBorders
       ? {
           ...(baseBorders ?? {}),
           ...(conditionalBorders ?? {}),
           ...(cellBorders ?? {}),
         }
-      : undefined;
+      : undefined,
+    theme
+  );
 
   const attrs: TableCellAttrs = {
     colspan: formatting?.gridSpan ?? 1,
@@ -1094,46 +1175,6 @@ function convertRun(
 }
 
 /**
- * Merge two TextFormatting objects (source overrides target)
- */
-function mergeTextFormatting(
-  target: TextFormatting | undefined,
-  source: TextFormatting | undefined
-): TextFormatting | undefined {
-  if (!source && !target) return undefined;
-  if (!source) return target;
-  if (!target) return source;
-
-  // Start with target (style formatting), then overlay source (inline formatting)
-  const result: TextFormatting = { ...target };
-
-  // Merge each property - source (inline) takes precedence
-  if (source.bold !== undefined) result.bold = source.bold;
-  if (source.italic !== undefined) result.italic = source.italic;
-  if (source.underline !== undefined) result.underline = source.underline;
-  if (source.strike !== undefined) result.strike = source.strike;
-  if (source.doubleStrike !== undefined) result.doubleStrike = source.doubleStrike;
-  if (source.color !== undefined) {
-    const hasExplicitColor =
-      source.color.rgb ||
-      source.color.themeColor ||
-      source.color.themeTint ||
-      source.color.themeShade;
-    if (!source.color.auto || hasExplicitColor) {
-      result.color = source.color;
-    }
-  }
-  if (source.highlight !== undefined) result.highlight = source.highlight;
-  if (source.fontSize !== undefined) result.fontSize = source.fontSize;
-  if (source.fontFamily !== undefined) result.fontFamily = source.fontFamily;
-  if (source.vertAlign !== undefined) result.vertAlign = source.vertAlign;
-  if (source.allCaps !== undefined) result.allCaps = source.allCaps;
-  if (source.smallCaps !== undefined) result.smallCaps = source.smallCaps;
-
-  return result;
-}
-
-/**
  * Convert RunContent to ProseMirror nodes
  */
 function convertRunContent(content: RunContent, marks: ReturnType<typeof schema.mark>[]): PMNode[] {
@@ -1263,10 +1304,16 @@ function convertImage(image: Image): PMNode {
   let displayMode: 'inline' | 'block' | 'float' = 'inline';
   if (wrapType === 'inline') {
     displayMode = 'inline';
+  } else if (wrapType === 'topAndBottom') {
+    displayMode = 'block';
+  } else if (isWrapNone(wrapType)) {
+    // wrapNone (behind / inFront): positioned float, painted out of paragraph flow.
+    displayMode = 'float';
   } else if (cssFloat && cssFloat !== 'none') {
     displayMode = 'float';
   } else {
-    displayMode = 'block'; // TopAndBottom or centered
+    // Centered square/tight/through images without a wrapping side fall back to block.
+    displayMode = 'block';
   }
 
   // Build transform string if needed (rotation, flip)
@@ -1346,6 +1393,13 @@ function convertImage(image: Image): PMNode {
     borderStyle = image.outline.style ? styleMap[image.outline.style] || 'solid' : 'solid';
   }
 
+  // Effect extent (shadow/glow padding) is parsed in EMU; convert to px so
+  // the renderer can apply it as outer margin.
+  const effectExtentTop = image.padding?.top ? emuToPixels(image.padding.top) : undefined;
+  const effectExtentBottom = image.padding?.bottom ? emuToPixels(image.padding.bottom) : undefined;
+  const effectExtentLeft = image.padding?.left ? emuToPixels(image.padding.left) : undefined;
+  const effectExtentRight = image.padding?.right ? emuToPixels(image.padding.right) : undefined;
+
   return schema.node('image', {
     src: image.src || '',
     alt: image.alt,
@@ -1367,6 +1421,17 @@ function convertImage(image: Image): PMNode {
     borderStyle: borderStyle,
     wrapText: wrapText,
     hlinkHref: image.hlinkHref,
+    cropTop: image.crop?.top,
+    cropRight: image.crop?.right,
+    cropBottom: image.crop?.bottom,
+    cropLeft: image.crop?.left,
+    opacity: image.opacity,
+    effectExtentTop,
+    effectExtentBottom,
+    effectExtentLeft,
+    effectExtentRight,
+    layoutInCell: image.layoutInCell,
+    allowOverlap: image.allowOverlap,
   });
 }
 
@@ -1558,6 +1623,21 @@ function textFormattingToMarks(
   // Text outline (w:outline)
   if (formatting.outline) {
     marks.push(schema.mark('textOutline'));
+  }
+
+  // Hidden text (w:vanish)
+  if (formatting.hidden) {
+    marks.push(schema.mark('hidden'));
+  }
+
+  // Per-run RTL (w:rtl) — independent of paragraph direction
+  if (formatting.rtl) {
+    marks.push(schema.mark('rtl'));
+  }
+
+  // Text effect animations (w:effect)
+  if (formatting.effect && formatting.effect !== 'none') {
+    marks.push(schema.mark('textEffect', { effect: formatting.effect }));
   }
 
   return marks;
@@ -1767,20 +1847,24 @@ function convertTextBox(textBox: TextBox, styleResolver: StyleResolver | null): 
 
 /**
  * Convert HeaderFooter content (array of Paragraph/Table blocks) to a ProseMirror document.
- * Used for editing headers/footers in their own ProseMirror editor.
+ * Used for editing headers/footers in their own ProseMirror editor and for the
+ * unified header/footer render pipeline. `theme` must be threaded for themeColor
+ * resolution in cell shading (`<w:shd w:themeFill=...>`) — without it, themed
+ * fills in HF tables fall back to the unresolved theme key.
  */
 export function headerFooterToProseDoc(
   content: Array<Paragraph | Table>,
-  options?: ToProseDocOptions
+  options?: ToProseDocOptions & { theme?: Theme | null }
 ): PMNode {
   const nodes: PMNode[] = [];
   const styleResolver = options?.styles ? createStyleResolver(options.styles) : null;
+  const theme = options?.theme ?? null;
 
   for (const block of content) {
     if (block.type === 'paragraph') {
       nodes.push(...convertParagraphWithTextBoxes(block, styleResolver));
     } else if (block.type === 'table') {
-      nodes.push(convertTable(block, styleResolver));
+      nodes.push(convertTable(block, styleResolver, theme));
     }
   }
 
@@ -1792,17 +1876,65 @@ export function headerFooterToProseDoc(
 }
 
 /**
- * Check if a paragraph contains a page break in any of its runs
+ * Convert footnote/endnote content (array of Paragraph/Table blocks) to a
+ * ProseMirror document. Mirrors `headerFooterToProseDoc` so footnotes flow
+ * through the same body pipeline (toFlowBlocks → measureBlocks →
+ * renderFragment) and inherit its block support — paragraph + table + image
+ * + textBox + fields. Pre-PR, footnoteLayout's `convertFootnoteToContent`
+ * re-implemented run/paragraph conversion by hand and silently dropped
+ * tables, images, and fields nested inside a footnote.
+ */
+export function footnoteToProseDoc(
+  content: Array<Paragraph | Table>,
+  options?: ToProseDocOptions & { theme?: Theme | null }
+): PMNode {
+  return headerFooterToProseDoc(content, options);
+}
+
+/**
+ * Returns true when `<w:br w:type="page"/>` appears anywhere in a paragraph.
+ *
+ * A hard page break is always a forced break per ECMA-376 §17.3.3.1. We used
+ * to require visible content before the break (and rely on
+ * `renderedPageBreakBefore` for leading breaks), but that attr is informational
+ * only and not honored at layout, so a break-only paragraph (empty paragraph
+ * containing just `<w:r><w:br w:type="page"/></w:r>`) silently dropped its
+ * forced break — Word renders such paragraphs with the next paragraph on a
+ * fresh page.
  */
 function paragraphHasPageBreak(paragraph: Paragraph): boolean {
-  for (const item of paragraph.content) {
+  function visitRunContent(content: RunContent): boolean {
+    return content.type === 'break' && content.breakType === 'page';
+  }
+
+  function visit(item: Paragraph['content'][number]): boolean {
     if (item.type === 'run') {
-      for (const content of (item as Run).content) {
-        if (content.type === 'break' && content.breakType === 'page') {
-          return true;
-        }
+      for (const c of (item as Run).content) {
+        if (visitRunContent(c)) return true;
       }
+      return false;
     }
+    if (item.type === 'hyperlink') {
+      for (const r of (item as Hyperlink).children) {
+        if (r.type === 'run' && visit(r)) return true;
+      }
+      return false;
+    }
+    if (item.type === 'insertion' || item.type === 'deletion') {
+      // Tracked-change wrappers can themselves contain a page break.
+      // Descend so a break inside <w:ins> or <w:del> still emits a
+      // pageBreak node downstream.
+      const tc = item as { content: Paragraph['content'] };
+      for (const inner of tc.content) {
+        if (visit(inner)) return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  for (const item of paragraph.content) {
+    if (visit(item)) return true;
   }
   return false;
 }

@@ -36,9 +36,10 @@ import type {
   FontSizeAttrs,
   FontFamilyAttrs,
 } from '../prosemirror/schema/marks';
-import type { Theme, SectionProperties } from '../types/document';
+import type { Theme, SectionProperties, NumberFormat } from '../types/document';
 import { resolveColor, resolveColorToHex, resolveHighlightToCss } from '../utils/colorResolver';
-import { pointsToPixels } from '../utils/units';
+import { pointsToPixels, halfPointsToPixels, halfPointsToPoints } from '../utils/units';
+import { convertBulletToUnicode } from '../docx/documentParser';
 
 /**
  * Options for the conversion.
@@ -52,6 +53,20 @@ export type ToFlowBlocksOptions = {
   theme?: Theme | null;
   /** Page content height in pixels (pageHeight - marginTop - marginBottom). Images taller than this are scaled down to fit. */
   pageContentHeight?: number;
+  /**
+   * @internal Allocated by toFlowBlocks() and threaded through table /
+   * text-box conversion so list numbering stays continuous across containers.
+   * Keyed by abstractNumId when known (ECMA-376 §17.9.18: numIds sharing one
+   * abstractNum share counter state); falls back to numId.
+   */
+  listCounters?: Map<number, number[]>;
+  /**
+   * @internal Tracks `${numId}:${ilvl}` pairs whose startOverride has already
+   * been applied. Per ECMA-376 §17.9.27 the override fires the first time
+   * each level of a numId is encountered, so a numId with overrides on
+   * multiple ilvls fires each one independently.
+   */
+  listSeenNumIds?: Set<string>;
 };
 
 const DEFAULT_FONT = 'Calibri';
@@ -99,6 +114,95 @@ function formatNumberedMarker(counters: number[], level: number): string {
   }
   if (parts.length === 0) return '1.';
   return `${parts.join('.')}.`;
+}
+
+const ROMAN_PAIRS: Array<[number, string]> = [
+  [1000, 'M'],
+  [900, 'CM'],
+  [500, 'D'],
+  [400, 'CD'],
+  [100, 'C'],
+  [90, 'XC'],
+  [50, 'L'],
+  [40, 'XL'],
+  [10, 'X'],
+  [9, 'IX'],
+  [5, 'V'],
+  [4, 'IV'],
+  [1, 'I'],
+];
+
+function toRoman(n: number, upper: boolean): string {
+  if (n <= 0) return '';
+  let value = n;
+  let out = '';
+  for (const [num, sym] of ROMAN_PAIRS) {
+    while (value >= num) {
+      out += sym;
+      value -= num;
+    }
+  }
+  return upper ? out : out.toLowerCase();
+}
+
+// Spreadsheet-style: 1→A, 26→Z, 27→AA, 28→AB, ...
+function toLetter(n: number, upper: boolean): string {
+  if (n <= 0) return '';
+  let value = n;
+  let out = '';
+  while (value > 0) {
+    const rem = (value - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    value = Math.floor((value - 1) / 26);
+  }
+  return upper ? out : out.toLowerCase();
+}
+
+function formatCounter(value: number, fmt: NumberFormat | undefined): string {
+  if (value <= 0) return '';
+  switch (fmt) {
+    case 'upperRoman':
+      return toRoman(value, true);
+    case 'lowerRoman':
+      return toRoman(value, false);
+    case 'upperLetter':
+      return toLetter(value, true);
+    case 'lowerLetter':
+      return toLetter(value, false);
+    case 'decimalZero':
+      return value < 10 ? `0${value}` : String(value);
+    case 'none':
+      return '';
+    default:
+      // decimal and unsupported formats fall back to decimal
+      return String(value);
+  }
+}
+
+/**
+ * Resolve an OOXML lvlText template like "%1.%2." against the counter stack
+ * and per-level numFmt list (ECMA-376 §17.9.11).
+ *
+ * When a referenced counter has no value yet (e.g. "%2" referenced from a
+ * level-0 paragraph), the placeholder AND the punctuation immediately
+ * following it are dropped — matches Word's behavior so "%1.%2." renders
+ * "1." rather than "1..".
+ *
+ * Exported for unit testing.
+ */
+export function resolveListTemplate(
+  template: string,
+  counters: number[],
+  levelNumFmts: NumberFormat[] | undefined
+): string {
+  return template.replace(/%(\d)([.):\]])?/g, (_, digit, punct = '') => {
+    const idx = parseInt(digit, 10) - 1;
+    if (idx < 0) return '';
+    const value = counters[idx] ?? 0;
+    const fmt = levelNumFmts?.[idx] ?? 'decimal';
+    const formatted = formatCounter(value, fmt);
+    return formatted ? formatted + punct : '';
+  });
 }
 
 /**
@@ -175,6 +279,101 @@ function extractRunFormatting(marks: readonly Mark[], theme?: Theme | null): Run
         break;
       }
 
+      case 'characterSpacing': {
+        // The PM `characterSpacing` mark is a multi-attribute container for
+        // four OOXML run-level properties: w:spacing (letter-spacing,
+        // §17.3.2.35), w:position (baseline shift, §17.3.2.24), w:w
+        // (horizontal text scale, §17.3.2.43), and w:kern (kerning
+        // threshold, §17.3.2.18). All four are parsed into the PM mark and
+        // rendered correctly in the hidden ProseMirror toDOM, but the
+        // layout-bridge dropped every attribute except the one we explicitly
+        // case'd, so painted runs lost the values.
+        const attrs = mark.attrs as {
+          spacing: number | null;
+          position: number | null;
+          scale: number | null;
+          kerning: number | null;
+        };
+        if (attrs.spacing != null && attrs.spacing !== 0) {
+          formatting.letterSpacing = twipsToPixels(attrs.spacing);
+        }
+        if (attrs.position != null && attrs.position !== 0) {
+          // w:position is half-points; positive raises (CSS vertical-align
+          // positive raises too).
+          formatting.positionPx = halfPointsToPixels(attrs.position);
+        }
+        if (attrs.scale != null && attrs.scale !== 100) {
+          formatting.horizontalScale = attrs.scale;
+        }
+        if (attrs.kerning != null && attrs.kerning > 0) {
+          // w:kern is in half-points; convert to points so the painter can
+          // gate `font-kerning` by comparing against the run's font size.
+          formatting.kerningMinPt = halfPointsToPoints(attrs.kerning);
+        }
+        break;
+      }
+
+      case 'allCaps':
+        formatting.allCaps = true;
+        break;
+
+      case 'smallCaps':
+        formatting.smallCaps = true;
+        break;
+
+      case 'emboss':
+        formatting.emboss = true;
+        break;
+
+      case 'imprint':
+        formatting.imprint = true;
+        break;
+
+      case 'textShadow':
+        formatting.textShadow = true;
+        break;
+
+      case 'textOutline':
+        formatting.textOutline = true;
+        break;
+
+      case 'hidden':
+        formatting.hidden = true;
+        break;
+
+      case 'rtl':
+        formatting.rtl = true;
+        break;
+
+      case 'textEffect': {
+        const effect = mark.attrs.effect as string | undefined;
+        if (
+          effect === 'blinkBackground' ||
+          effect === 'lights' ||
+          effect === 'antsBlack' ||
+          effect === 'antsRed' ||
+          effect === 'shimmer' ||
+          effect === 'sparkle'
+        ) {
+          formatting.textEffect = effect;
+        }
+        break;
+      }
+
+      case 'emphasisMark': {
+        // CJK emphasis marks (§17.3.2.12). The PM mark stores the variant
+        // type as `attrs.type`; pass it through so the painter can look up
+        // the matching CSS text-emphasis style.
+        const t = mark.attrs.type as string | undefined;
+        if (t === 'dot' || t === 'comma' || t === 'circle' || t === 'underDot') {
+          formatting.emphasisMark = t;
+        } else {
+          // Unknown variant — fall back to dot (Word's default).
+          formatting.emphasisMark = 'dot';
+        }
+        break;
+      }
+
       case 'superscript':
         formatting.superscript = true;
         break;
@@ -232,22 +431,57 @@ function extractRunFormatting(marks: readonly Mark[], theme?: Theme | null): Run
 }
 
 /**
+ * Resolve the paragraph's style-cascaded run defaults into a `RunFormatting`
+ * baseline that individual runs can inherit. Per ECMA-376 §17.3.2.27 a run
+ * with a partial `w:rFonts` (e.g. only `w:eastAsia`) inherits the missing
+ * sides from the paragraph style → basedOn chain → docDefaults; without
+ * this, runs whose own mark omits `ascii`/`hAnsi` lose the style's font and
+ * fall back to the painter's hardcoded Calibri stack (#392).
+ */
+function paragraphRunDefaults(pmAttrs: PMParagraphAttrs): {
+  fontFamily?: string;
+  fontSize?: number;
+} {
+  const dtf = pmAttrs.defaultTextFormatting as
+    | {
+        fontSize?: number;
+        fontFamily?: { ascii?: string; hAnsi?: string };
+      }
+    | undefined;
+  if (!dtf) return {};
+  const result: { fontFamily?: string; fontSize?: number } = {};
+  if (dtf.fontFamily) {
+    const family = dtf.fontFamily.ascii || dtf.fontFamily.hAnsi;
+    if (family) result.fontFamily = family;
+  }
+  if (dtf.fontSize != null) {
+    // TextFormatting.fontSize is in half-points; RunFormatting.fontSize is points.
+    result.fontSize = dtf.fontSize / 2;
+  }
+  return result;
+}
+
+/**
  * Convert a paragraph node to runs.
  */
 function paragraphToRuns(node: PMNode, startPos: number, _options: ToFlowBlocksOptions): Run[] {
   const runs: Run[] = [];
   const offset = startPos + 1; // +1 for opening tag
   const theme = _options.theme;
+  const paraDefaults = paragraphRunDefaults(node.attrs as PMParagraphAttrs);
 
   node.forEach((child, childOffset) => {
     const childPos = offset + childOffset;
 
     if (child.isText && child.text) {
-      // Text node - create text run
+      // Text node — create text run. Run-level marks override paragraph
+      // defaults; the spread order below ensures `formatting`'s explicit
+      // values win over the inherited fallback.
       const formatting = extractRunFormatting(child.marks, theme);
       const run: TextRun = {
         kind: 'text',
         text: child.text,
+        ...paraDefaults,
         ...formatting,
         pmStart: childPos,
         pmEnd: childPos + child.nodeSize,
@@ -262,10 +496,11 @@ function paragraphToRuns(node: PMNode, startPos: number, _options: ToFlowBlocksO
       };
       runs.push(run);
     } else if (child.type.name === 'tab') {
-      // Tab character
+      // Tab character — inherits paragraph defaults the same way text runs do.
       const formatting = extractRunFormatting(child.marks, theme);
       const run: TabRun = {
         kind: 'tab',
+        ...paraDefaults,
         ...formatting,
         pmStart: childPos,
         pmEnd: childPos + child.nodeSize,
@@ -296,6 +531,11 @@ function paragraphToRuns(node: PMNode, startPos: number, _options: ToFlowBlocksO
         distRight: attrs.distRight as number | undefined,
         // Preserve position for page-level floating image positioning
         position: attrs.position as ImageRun['position'] | undefined,
+        cropTop: attrs.cropTop as number | undefined,
+        cropRight: attrs.cropRight as number | undefined,
+        cropBottom: attrs.cropBottom as number | undefined,
+        cropLeft: attrs.cropLeft as number | undefined,
+        opacity: attrs.opacity as number | undefined,
         pmStart: childPos,
         pmEnd: childPos + child.nodeSize,
       };
@@ -387,6 +627,11 @@ function paragraphToRuns(node: PMNode, startPos: number, _options: ToFlowBlocksO
             distLeft: attrs.distLeft as number | undefined,
             distRight: attrs.distRight as number | undefined,
             position: attrs.position as ImageRun['position'] | undefined,
+            cropTop: attrs.cropTop as number | undefined,
+            cropRight: attrs.cropRight as number | undefined,
+            cropBottom: attrs.cropBottom as number | undefined,
+            cropLeft: attrs.cropLeft as number | undefined,
+            opacity: attrs.opacity as number | undefined,
             pmStart: sdtChildPos,
             pmEnd: sdtChildPos + sdtChild.nodeSize,
           };
@@ -400,9 +645,69 @@ function paragraphToRuns(node: PMNode, startPos: number, _options: ToFlowBlocksO
 }
 
 /**
+ * Advance the counter stack for a list paragraph and return the rendered
+ * marker. Mutates `counters` in place. Returns null when no marker should
+ * be drawn (numId is missing or 0 — "no numbering" per ECMA-376).
+ */
+function computeListMarker(
+  pmAttrs: PMParagraphAttrs,
+  listCounters: Map<number, number[]>,
+  seenNumIds: Set<string>
+): string | null {
+  const numPr = pmAttrs.numPr;
+  if (!numPr) return null;
+  const numId = numPr.numId;
+  if (numId == null || numId === 0) return null;
+
+  // Bullets don't consume a numbering slot — they share a numId with numbered
+  // levels in some templates, and incrementing here would skip numbers.
+  // Run the Symbol-font glyph mapper here too so bullets in table cells and
+  // text boxes get the same Unicode conversion that body bullets get from
+  // the parser-side resolveBulletMarker (idempotent for already-Unicode chars).
+  if (pmAttrs.listIsBullet) {
+    return convertBulletToUnicode(pmAttrs.listMarker || '');
+  }
+
+  const level = numPr.ilvl ?? 0;
+  const counterKey = pmAttrs.listAbstractNumId ?? numId;
+  const counters = listCounters.get(counterKey) ?? new Array(9).fill(0);
+
+  const seenKey = `${numId}:${level}`;
+  if (!seenNumIds.has(seenKey)) {
+    seenNumIds.add(seenKey);
+    if (pmAttrs.listStartOverride != null) {
+      // Set to (start - 1) so the increment below produces `start` itself.
+      counters[level] = pmAttrs.listStartOverride - 1;
+    }
+  }
+
+  counters[level] = (counters[level] ?? 0) + 1;
+  for (let i = level + 1; i < counters.length; i += 1) {
+    counters[i] = 0;
+  }
+  listCounters.set(counterKey, counters);
+
+  // Parsed lvlText template (e.g. "%1." or "%1.%2.") resolves against the
+  // counter stack. Editor-created lists with no template fall back to the
+  // generic decimal formatter.
+  if (pmAttrs.listMarker && pmAttrs.listMarker.includes('%')) {
+    return resolveListTemplate(pmAttrs.listMarker, counters, pmAttrs.listLevelNumFmts ?? undefined);
+  }
+  if (pmAttrs.listMarker) {
+    return pmAttrs.listMarker;
+  }
+  return formatNumberedMarker(counters, level);
+}
+
+/**
  * Convert PM paragraph attrs to layout engine paragraph attrs.
  */
-function convertParagraphAttrs(pmAttrs: PMParagraphAttrs, theme?: Theme | null): ParagraphAttrs {
+function convertParagraphAttrs(
+  pmAttrs: PMParagraphAttrs,
+  theme?: Theme | null,
+  listCounters?: Map<number, number[]>,
+  listSeenNumIds?: Set<string>
+): ParagraphAttrs {
   const attrs: ParagraphAttrs = {};
 
   // Alignment - map DOCX values to CSS-compatible values
@@ -444,6 +749,9 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs, theme?: Theme | null):
         attrs.spacing.lineRule = 'auto';
       }
     }
+  }
+  if (pmAttrs.spacingExplicit) {
+    attrs.spacingExplicit = pmAttrs.spacingExplicit;
   }
 
   // Indentation - handle list item fallback calculation
@@ -535,7 +843,12 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs, theme?: Theme | null):
     }));
   }
 
-  // Page break control
+  // Page break control. `renderedPageBreakBefore` (Word's
+  // `<w:lastRenderedPageBreak/>` marker) is informational — it records where
+  // Word last broke the page. ECMA-376 §17.4.16 does NOT specify it as a
+  // forced break, and Word does not honor it as one on reflow. Preserve the
+  // attr through round-trip so the marker is re-emitted on save, but do not
+  // act on it during layout.
   if (pmAttrs.pageBreakBefore) {
     attrs.pageBreakBefore = true;
   }
@@ -562,7 +875,16 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs, theme?: Theme | null):
       ilvl: pmAttrs.numPr.ilvl,
     };
   }
-  if (pmAttrs.listMarker) {
+  // Resolve the OOXML lvlText template (e.g. "%1.") into the rendered marker
+  // ("1.", "II.", "1.1.", etc.). Single source of truth — covers body, table,
+  // and text-box paragraphs since they all share this attr conversion.
+  const resolvedMarker =
+    listCounters && listSeenNumIds
+      ? computeListMarker(pmAttrs, listCounters, listSeenNumIds)
+      : null;
+  if (resolvedMarker != null) {
+    attrs.listMarker = resolvedMarker;
+  } else if (pmAttrs.listMarker) {
     attrs.listMarker = pmAttrs.listMarker;
   }
   if (pmAttrs.listIsBullet != null) {
@@ -633,7 +955,12 @@ function convertParagraph(
 ): ParagraphBlock {
   const pmAttrs = node.attrs as PMParagraphAttrs;
   const runs = paragraphToRuns(node, startPos, options);
-  const attrs = convertParagraphAttrs(pmAttrs, options.theme);
+  const attrs = convertParagraphAttrs(
+    pmAttrs,
+    options.theme,
+    options.listCounters,
+    options.listSeenNumIds
+  );
 
   return {
     kind: 'paragraph',
@@ -739,7 +1066,12 @@ function extractCellBorders(
 /**
  * Convert a table cell node.
  */
-function convertTableCell(node: PMNode, startPos: number, options: ToFlowBlocksOptions): TableCell {
+function convertTableCell(
+  node: PMNode,
+  startPos: number,
+  options: ToFlowBlocksOptions,
+  tableCellMargins?: { top?: number; bottom?: number; left?: number; right?: number }
+): TableCell {
   const blocks: FlowBlock[] = [];
   let offset = startPos + 1; // +1 for opening tag
 
@@ -753,17 +1085,45 @@ function convertTableCell(node: PMNode, startPos: number, options: ToFlowBlocksO
   });
 
   const attrs = node.attrs;
+  const widthValue = attrs.width as number | undefined;
+  const widthType = attrs.widthType as string | undefined;
+  const width =
+    widthValue && (!widthType || widthType === 'dxa' || widthType === 'auto')
+      ? twipsToPixels(widthValue)
+      : undefined;
 
-  // Convert cell margins (twips) to pixel padding
-  // OOXML TableNormal defaults: top=0, bottom=0, left=108 twips (~7px), right=108 twips (~7px)
+  // Resolve cell padding via the OOXML cascade (§17.4.41 + §17.4.79):
+  //   1. cell w:tcMar (per-side, only when value > 0 — Word treats an
+  //      explicit zero as "fall through, not literal zero")
+  //   2. table-level w:tblCellMar / resolved table style's tblPr.cellMargins
+  //
+  // Tier 2 is fully resolved upstream by toProseDoc.convertTable, which
+  // walks the inline tblCellMar → table-style → basedOn chain → default
+  // table style cascade. We just consume the flattened result here. There
+  // is no hardcoded "TableNormal default" fallback any more — any document
+  // with a styles.xml will have its default table style's cellMargins
+  // already in tableCellMargins; a document genuinely missing every tier
+  // renders with 0 padding (the spec literal), which is correct for that
+  // edge case.
   const margins = attrs.margins as
     | { top?: number; bottom?: number; left?: number; right?: number }
     | undefined;
+  const resolveSide = (cellTwips: number | undefined, tableTwips: number | undefined): number => {
+    if (cellTwips != null) {
+      const px = twipsToPixels(cellTwips);
+      if (px > 0) return px;
+    }
+    if (tableTwips != null) {
+      const px = twipsToPixels(tableTwips);
+      if (px >= 0) return px;
+    }
+    return 0;
+  };
   const padding = {
-    top: margins?.top != null ? twipsToPixels(margins.top) : 0,
-    right: margins?.right != null ? twipsToPixels(margins.right) : 7,
-    bottom: margins?.bottom != null ? twipsToPixels(margins.bottom) : 0,
-    left: margins?.left != null ? twipsToPixels(margins.left) : 7,
+    top: resolveSide(margins?.top, tableCellMargins?.top),
+    right: resolveSide(margins?.right, tableCellMargins?.right),
+    bottom: resolveSide(margins?.bottom, tableCellMargins?.bottom),
+    left: resolveSide(margins?.left, tableCellMargins?.left),
   };
 
   return {
@@ -771,24 +1131,32 @@ function convertTableCell(node: PMNode, startPos: number, options: ToFlowBlocksO
     blocks,
     colSpan: attrs.colspan as number,
     rowSpan: attrs.rowspan as number,
-    width: attrs.width ? twipsToPixels(attrs.width as number) : undefined,
+    width,
+    widthValue,
+    widthType,
     verticalAlign: attrs.verticalAlign as 'top' | 'center' | 'bottom' | undefined,
     background: attrs.backgroundColor ? `#${attrs.backgroundColor}` : undefined,
     borders: extractCellBorders(attrs as Record<string, unknown>, options.theme),
     padding,
+    noWrap: (attrs.noWrap as boolean | undefined) || undefined,
   };
 }
 
 /**
  * Convert a table row node.
  */
-function convertTableRow(node: PMNode, startPos: number, options: ToFlowBlocksOptions): TableRow {
+function convertTableRow(
+  node: PMNode,
+  startPos: number,
+  options: ToFlowBlocksOptions,
+  tableCellMargins?: { top?: number; bottom?: number; left?: number; right?: number }
+): TableRow {
   const cells: TableCell[] = [];
   let offset = startPos + 1; // +1 for opening tag
 
   node.forEach((child) => {
     if (child.type.name === 'tableCell' || child.type.name === 'tableHeader') {
-      cells.push(convertTableCell(child, offset, options));
+      cells.push(convertTableCell(child, offset, options, tableCellMargins));
     }
     offset += child.nodeSize;
   });
@@ -810,9 +1178,16 @@ function convertTable(node: PMNode, startPos: number, options: ToFlowBlocksOptio
   const rows: TableRow[] = [];
   let offset = startPos + 1; // +1 for opening tag
 
+  // Read the table-level <w:tblCellMar> default cell margins (twips). Cells
+  // cascade to this when their own w:tcMar is absent or explicit-zero. PM
+  // stores it as `cellMargins: { top, bottom, left, right }` in twips.
+  const tableCellMargins = node.attrs.cellMargins as
+    | { top?: number; bottom?: number; left?: number; right?: number }
+    | undefined;
+
   node.forEach((child) => {
     if (child.type.name === 'tableRow') {
-      rows.push(convertTableRow(child, offset, options));
+      rows.push(convertTableRow(child, offset, options, tableCellMargins));
     }
     offset += child.nodeSize;
   });
@@ -992,7 +1367,20 @@ export function toFlowBlocks(doc: PMNode, options: ToFlowBlocksOptions = {}): Fl
 
   const blocks: FlowBlock[] = [];
   const offset = 0; // Start at document beginning
-  const listCounters = new Map<number, number[]>();
+  let lastSectionMarginsTwips: { top: number; bottom: number; left: number; right: number } = {
+    top: 1440,
+    bottom: 1440,
+    left: 1440,
+    right: 1440,
+  };
+  // Shared counter map: paragraphs in tables and text boxes update it too,
+  // so list numbering stays continuous across containers.
+  if (!opts.listCounters) {
+    opts.listCounters = new Map<number, number[]>();
+  }
+  if (!opts.listSeenNumIds) {
+    opts.listSeenNumIds = new Set<string>();
+  }
 
   doc.forEach((node, nodeOffset) => {
     const pos = offset + nodeOffset;
@@ -1002,26 +1390,6 @@ export function toFlowBlocks(doc: PMNode, options: ToFlowBlocksOptions = {}): Fl
         {
           const block = convertParagraph(node, pos, opts);
           const pmAttrs = node.attrs as PMParagraphAttrs;
-
-          if (pmAttrs.numPr) {
-            if (!pmAttrs.listMarker) {
-              const numId = pmAttrs.numPr.numId;
-              // numId === 0 means "no numbering" per OOXML spec (ECMA-376)
-              if (numId == null || numId === 0) break;
-              const level = pmAttrs.numPr.ilvl ?? 0;
-              const counters = listCounters.get(numId) ?? new Array(9).fill(0);
-
-              counters[level] = (counters[level] ?? 0) + 1;
-              for (let i = level + 1; i < counters.length; i += 1) {
-                counters[i] = 0;
-              }
-
-              listCounters.set(numId, counters);
-
-              const marker = pmAttrs.listIsBullet ? '•' : formatNumberedMarker(counters, level);
-              block.attrs = { ...block.attrs, listMarker: marker };
-            }
-          }
 
           blocks.push(block);
 
@@ -1036,21 +1404,35 @@ export function toFlowBlocks(doc: PMNode, options: ToFlowBlocksOptions = {}): Fl
             };
 
             if (secProps) {
-              // Populate page size
-              if (secProps.pageWidth || secProps.pageHeight) {
+              // Populate page size when at least one dimension is overridden.
+              if (secProps.pageWidth !== undefined || secProps.pageHeight !== undefined) {
                 sectionBreak.pageSize = {
                   w: twipsToPixels(secProps.pageWidth ?? 12240),
                   h: twipsToPixels(secProps.pageHeight ?? 15840),
                 };
               }
-              // Populate margins
-              if (secProps.marginTop !== undefined || secProps.marginLeft !== undefined) {
-                sectionBreak.margins = {
-                  top: twipsToPixels(secProps.marginTop ?? 1440),
-                  bottom: twipsToPixels(secProps.marginBottom ?? 1440),
-                  left: twipsToPixels(secProps.marginLeft ?? 1440),
-                  right: twipsToPixels(secProps.marginRight ?? 1440),
+              // Section overrides any margin → emit a full margins record;
+              // unset sides inherit from the prior section (tracked above)
+              // instead of resetting to the OOXML 1440 default.
+              if (
+                secProps.marginTop !== undefined ||
+                secProps.marginBottom !== undefined ||
+                secProps.marginLeft !== undefined ||
+                secProps.marginRight !== undefined
+              ) {
+                const mergedTwips = {
+                  top: secProps.marginTop ?? lastSectionMarginsTwips.top,
+                  bottom: secProps.marginBottom ?? lastSectionMarginsTwips.bottom,
+                  left: secProps.marginLeft ?? lastSectionMarginsTwips.left,
+                  right: secProps.marginRight ?? lastSectionMarginsTwips.right,
                 };
+                sectionBreak.margins = {
+                  top: twipsToPixels(mergedTwips.top),
+                  bottom: twipsToPixels(mergedTwips.bottom),
+                  left: twipsToPixels(mergedTwips.left),
+                  right: twipsToPixels(mergedTwips.right),
+                };
+                lastSectionMarginsTwips = mergedTwips;
               }
               // Populate columns
               const colCount = secProps.columnCount ?? 1;

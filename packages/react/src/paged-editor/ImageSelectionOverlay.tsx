@@ -48,6 +48,11 @@ export interface ImageSelectionOverlayProps {
   onDragStart?: () => void;
   /** Callback when drag ends (cancelled or completed) */
   onDragEnd?: () => void;
+  /** Callback when the user right-clicks the selected image. The overlay sits
+   *  on top of the painted image and absorbs pointer events, so the
+   *  paged-editor's contextmenu handler never fires for it — the parent wires
+   *  this prop to route through to the same image-context-menu opener. */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 // =============================================================================
@@ -154,6 +159,7 @@ export function ImageSelectionOverlay({
   onDragMove,
   onDragStart,
   onDragEnd,
+  onContextMenu,
 }: ImageSelectionOverlayProps): React.ReactElement | null {
   const [isResizing, setIsResizing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -437,6 +443,7 @@ export function ImageSelectionOverlay({
           zIndex: 15,
         }}
         onMouseDown={handleBodyMouseDown}
+        onContextMenu={onContextMenu}
       />
 
       {/* Corner resize handles */}

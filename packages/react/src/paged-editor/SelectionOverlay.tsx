@@ -10,10 +10,7 @@
  */
 
 import React, { useEffect, useState, useRef } from 'react';
-import type {
-  SelectionRect,
-  CaretPosition,
-} from '@eigenpal/docx-core/layout-bridge/selectionRects';
+import type { SelectionRect, CaretPosition } from '@eigenpal/docx-core/layout-bridge';
 
 // =============================================================================
 // TYPES
@@ -248,9 +245,9 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({
  */
 export function useSelectionOverlay(
   pmSelection: { from: number; to: number } | null,
-  layout: import('@eigenpal/docx-core/layout-engine/types').Layout | null,
-  blocks: import('@eigenpal/docx-core/layout-engine/types').FlowBlock[],
-  measures: import('@eigenpal/docx-core/layout-engine/types').Measure[]
+  layout: import('@eigenpal/docx-core/layout-engine').Layout | null,
+  blocks: import('@eigenpal/docx-core/layout-engine').FlowBlock[],
+  measures: import('@eigenpal/docx-core/layout-engine').Measure[]
 ): {
   selectionRects: SelectionRect[];
   caretPosition: CaretPosition | null;
@@ -266,23 +263,21 @@ export function useSelectionOverlay(
     }
 
     // Import dynamically to avoid circular dependencies
-    import('@eigenpal/docx-core/layout-bridge/selectionRects').then(
-      ({ selectionToRects, getCaretPosition }) => {
-        const { from, to } = pmSelection;
+    import('@eigenpal/docx-core/layout-bridge').then(({ selectionToRects, getCaretPosition }) => {
+      const { from, to } = pmSelection;
 
-        if (from === to) {
-          // Collapsed selection - show caret
-          const caret = getCaretPosition(layout, blocks, measures, from);
-          setCaretPosition(caret);
-          setSelectionRects([]);
-        } else {
-          // Range selection - show highlight
-          const rects = selectionToRects(layout, blocks, measures, from, to);
-          setSelectionRects(rects);
-          setCaretPosition(null);
-        }
+      if (from === to) {
+        // Collapsed selection - show caret
+        const caret = getCaretPosition(layout, blocks, measures, from);
+        setCaretPosition(caret);
+        setSelectionRects([]);
+      } else {
+        // Range selection - show highlight
+        const rects = selectionToRects(layout, blocks, measures, from, to);
+        setSelectionRects(rects);
+        setCaretPosition(null);
       }
-    );
+    });
   }, [pmSelection, layout, blocks, measures]);
 
   return { selectionRects, caretPosition };

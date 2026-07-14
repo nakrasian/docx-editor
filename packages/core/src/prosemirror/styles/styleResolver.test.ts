@@ -231,6 +231,94 @@ describe('StyleResolver', () => {
       expect(result?.fontSize).toBe(22); // From docDefaults
       expect(result?.bold).toBe(true); // From Strong style
     });
+
+    // ECMA-376 §17.7.4.18: runs without explicit <w:rStyle> still inherit from
+    // the default character style (the one marked w:default="1"). Pre-PR,
+    // resolveRunStyle skipped this tier — only docDefaults reached such runs.
+    test('applies default character style when no styleId given', () => {
+      const styleDefinitions: StyleDefinitions = {
+        docDefaults: {
+          rPr: { fontSize: 22 },
+        },
+        styles: [
+          {
+            styleId: 'FontePadrao',
+            type: 'character',
+            default: true,
+            rPr: { fontFamily: { ascii: 'Cambria', hAnsi: 'Cambria' } },
+          },
+        ],
+      };
+
+      const resolver = createStyleResolver(styleDefinitions);
+      const result = resolver.resolveRunStyle(null);
+
+      expect(result?.fontSize).toBe(22); // docDefaults
+      expect(result?.fontFamily?.ascii).toBe('Cambria'); // default char style
+    });
+
+    test('explicit rStyle overrides default character style', () => {
+      const styleDefinitions: StyleDefinitions = {
+        docDefaults: { rPr: { fontSize: 22 } },
+        styles: [
+          {
+            styleId: 'FontePadrao',
+            type: 'character',
+            default: true,
+            rPr: { fontFamily: { ascii: 'Cambria', hAnsi: 'Cambria' } },
+          },
+          {
+            styleId: 'Code',
+            type: 'character',
+            rPr: { fontFamily: { ascii: 'Consolas', hAnsi: 'Consolas' } },
+          },
+        ],
+      };
+
+      const resolver = createStyleResolver(styleDefinitions);
+      const result = resolver.resolveRunStyle('Code');
+
+      // Cascade: docDefaults (fontSize 22) → default char style (Cambria) →
+      // explicit Code style (Consolas overrides Cambria, fontSize stays 22).
+      expect(result?.fontSize).toBe(22);
+      expect(result?.fontFamily?.ascii).toBe('Consolas');
+    });
+
+    test('getDefaultCharacterStyle returns the style flagged default', () => {
+      const styleDefinitions: StyleDefinitions = {
+        styles: [
+          {
+            styleId: 'FontePadrao',
+            type: 'character',
+            default: true,
+            rPr: {},
+          },
+          {
+            styleId: 'Code',
+            type: 'character',
+            rPr: {},
+          },
+        ],
+      };
+
+      const resolver = createStyleResolver(styleDefinitions);
+      expect(resolver.getDefaultCharacterStyle()?.styleId).toBe('FontePadrao');
+    });
+
+    test('getDefaultCharacterStyle returns undefined when no default flagged', () => {
+      const styleDefinitions: StyleDefinitions = {
+        styles: [
+          {
+            styleId: 'Code',
+            type: 'character',
+            rPr: {},
+          },
+        ],
+      };
+
+      const resolver = createStyleResolver(styleDefinitions);
+      expect(resolver.getDefaultCharacterStyle()).toBeUndefined();
+    });
   });
 
   describe('getParagraphStyles', () => {
@@ -323,6 +411,72 @@ describe('StyleResolver', () => {
 
       expect(result.runFormatting?.fontFamily?.ascii).toBe('Cambria'); // Overridden
       expect(result.runFormatting?.fontFamily?.eastAsia).toBe('SimSun'); // Preserved from docDefaults
+    });
+
+    // Regression for #387 — when docDefaults supplies a theme reference and
+    // a derived style supplies an explicit name for the SAME slot, the theme
+    // attr must NOT survive the merge. At the OOXML render layer the theme
+    // attr wins, so leaking `asciiTheme="minorHAnsi"` past an explicit
+    // `ascii="Arial"` resolves the run back to the theme font (Calibri).
+    test('explicit ascii/hAnsi from style clears inherited theme refs', () => {
+      const styleDefinitions: StyleDefinitions = {
+        docDefaults: {
+          rPr: {
+            fontFamily: {
+              ascii: 'Calibri',
+              hAnsi: 'Calibri',
+              asciiTheme: 'minorHAnsi',
+              hAnsiTheme: 'minorHAnsi',
+            },
+          },
+        },
+        styles: [
+          {
+            styleId: 'Heading1',
+            type: 'paragraph',
+            rPr: {
+              fontFamily: { ascii: 'Arial', hAnsi: 'Arial' },
+            },
+          },
+        ],
+      };
+
+      const resolver = createStyleResolver(styleDefinitions);
+      const result = resolver.resolveParagraphStyle('Heading1');
+
+      expect(result.runFormatting?.fontFamily?.ascii).toBe('Arial');
+      expect(result.runFormatting?.fontFamily?.hAnsi).toBe('Arial');
+      expect(result.runFormatting?.fontFamily?.asciiTheme).toBeUndefined();
+      expect(result.runFormatting?.fontFamily?.hAnsiTheme).toBeUndefined();
+    });
+
+    // Inverse: a style that supplies a theme ref must clear the inherited
+    // explicit name from that slot too.
+    test('explicit theme ref from style clears inherited ascii/hAnsi', () => {
+      const styleDefinitions: StyleDefinitions = {
+        docDefaults: {
+          rPr: {
+            fontFamily: { ascii: 'Calibri', hAnsi: 'Calibri' },
+          },
+        },
+        styles: [
+          {
+            styleId: 'Themed',
+            type: 'paragraph',
+            rPr: {
+              fontFamily: { asciiTheme: 'majorHAnsi', hAnsiTheme: 'majorHAnsi' },
+            },
+          },
+        ],
+      };
+
+      const resolver = createStyleResolver(styleDefinitions);
+      const result = resolver.resolveParagraphStyle('Themed');
+
+      expect(result.runFormatting?.fontFamily?.asciiTheme).toBe('majorHAnsi');
+      expect(result.runFormatting?.fontFamily?.hAnsiTheme).toBe('majorHAnsi');
+      expect(result.runFormatting?.fontFamily?.ascii).toBeUndefined();
+      expect(result.runFormatting?.fontFamily?.hAnsi).toBeUndefined();
     });
   });
 });

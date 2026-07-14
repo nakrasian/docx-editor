@@ -74,6 +74,22 @@ export function IconSave(props: IconProps) {
   );
 }
 
+export function IconFileDownload(props: IconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z" />
+    </SvgIcon>
+  );
+}
+
+export function IconFileUpload(props: IconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="M440-320v-326L336-542l-56-58 200-200 200 200-56 58-104-104v326h-80ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z" />
+    </SvgIcon>
+  );
+}
+
 export function IconBold(props: IconProps) {
   return (
     <SvgIcon {...props}>
@@ -811,6 +827,16 @@ export function IconTextDirectionRtl(props: IconProps) {
   );
 }
 
+// Material Symbol "auto_awesome" — official path from Google Fonts.
+// Source: https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined/auto_awesome/default/24px.svg
+export function IconAgentSparkle(props: IconProps) {
+  return (
+    <SvgIcon {...props}>
+      <path d="m760-600-50-110-110-50 110-50 50-110 50 110 110 50-110 50-50 110Zm0 560-50-110-110-50 110-50 50-110 50 110 110 50-110 50-50 110ZM360-160 260-380 40-480l220-100 100-220 100 220 220 100-220 100-100 220Zm0-194 40-86 86-40-86-40-40-86-40 86-86 40 86 40 40 86Zm0-126Z" />
+    </SvgIcon>
+  );
+}
+
 // ============================================================================
 // ICON MAP - for MaterialSymbol compatibility
 // ============================================================================
@@ -820,6 +846,8 @@ const iconMap: Record<string, React.ComponentType<IconProps>> = {
   redo: IconRedo,
   print: IconPrint,
   save: IconSave,
+  file_download: IconFileDownload,
+  file_upload: IconFileUpload,
   format_bold: IconBold,
   format_italic: IconItalic,
   format_underlined: IconUnderline,
@@ -918,6 +946,8 @@ const iconMap: Record<string, React.ComponentType<IconProps>> = {
   format_textdirection_l_to_r: IconTextDirectionLtr,
   format_textdirection_r_to_l: IconTextDirectionRtl,
   toc: IconToc,
+  // Agent
+  'agent-sparkle': IconAgentSparkle,
 };
 
 /**
